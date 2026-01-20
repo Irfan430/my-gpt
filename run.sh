@@ -3,6 +3,7 @@
 # WormGPT Run Script
 echo "==================================="
 echo "WormGPT DeepSeek Pro"
+echo "Professional AI Chatbot"
 echo "==================================="
 
 # Colors
@@ -38,12 +39,22 @@ if [ -f "wormgpt_config.json" ]; then
     echo -e "${CYAN}Configuration loaded${NC}"
     echo -e "${YELLOW}WebUI Port: ${PORT}${NC}"
     echo -e "${YELLOW}WebUI Enabled: ${WEBUI_ENABLED}${NC}"
+    echo -e "${GREEN}Conversation Memory: Active${NC}"
+    echo -e "${GREEN}Code Highlighting: Active${NC}"
     
     if [ "$WEBUI_ENABLED" = "True" ] || [ "$WEBUI_ENABLED" = "true" ]; then
-        echo -e "${GREEN}WebUI will be available at: http://localhost:${PORT}${NC}"
+        echo -e "${GREEN}WebUI available at: http://localhost:${PORT}${NC}"
     fi
 fi
 
+echo ""
+echo -e "${YELLOW}Starting WormGPT...${NC}"
+echo -e "${GREEN}Features enabled:${NC}"
+echo -e "  • Conversation memory (separate JSON files)"
+echo -e "  • Code block highlighting"
+echo -e "  • Real-time streaming"
+echo -e "  • Professional WebUI"
+echo ""
+
 # Run the application
-echo -e "${CYAN}Starting WormGPT...${NC}"
 python3 ai.py
