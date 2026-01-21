@@ -2,40 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>WormGPT</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WormGPT</title>
 <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
 
-<div class="app">
+<div id="app">
 
-  <aside class="sidebar" id="sidebar">
-    <div class="logo">🐛 WormGPT</div>
-    <button class="new-chat" onclick="newChat()">＋ New Chat</button>
-    <div id="conversationList" class="conversations"></div>
-    <div class="bottom">∞ Memory Enabled</div>
+  <!-- SIDEBAR -->
+  <aside id="sidebar">
+    <div class="side-header">
+      <h2>🧠 WormGPT</h2>
+      <button id="newChat">＋ New Chat</button>
+    </div>
+    <ul id="conversationList"></ul>
   </aside>
 
-  <main class="chat">
-    <header>
-      <button class="menu-btn" onclick="toggleSidebar()">☰</button>
-      <span id="status">Ready</span>
-    </header>
+  <!-- CHAT -->
+  <main id="chat">
 
-    <div id="banner" class="banner hidden">
-      🔁 Previous conversation restored
+    <div id="topbar">
+      <span id="status">Ready</span>
+      <button id="stopBtn" class="hidden">⏹ Stop</button>
     </div>
 
-    <div id="messages" class="messages"></div>
+    <div id="messages"></div>
 
-    <footer>
-      <input id="input" placeholder="Message WormGPT…" />
-      <button id="sendBtn" onclick="send()">➤</button>
-      <button id="stopBtn" class="stop hidden" onclick="stopStream()">⏹</button>
-    </footer>
+    <div id="inputBar">
+      <textarea id="input" placeholder="Type your message…"></textarea>
+      <button id="send">Send</button>
+    </div>
+
   </main>
-
 </div>
 
 <script src="/static/js/app.js"></script>
