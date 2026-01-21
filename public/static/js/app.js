@@ -1,15 +1,34 @@
 let conversation_id = localStorage.getItem("conversation_id") || "";
+let eventSource = null;
+let streaming = false;
+
 const messages = document.getElementById("messages");
 const convList = document.getElementById("conversationList");
+const banner = document.getElementById("banner");
+const sendBtn = document.getElementById("sendBtn");
+const stopBtn = document.getElementById("stopBtn");
+const status = document.getElementById("status");
 
 function toggleSidebar(){
   document.getElementById("sidebar").classList.toggle("show");
 }
 
 function newChat(){
-  localStorage.removeItem("conversation_id");
   conversation_id = "";
-  messages.innerHTML = "";
+  localStorage.removeItem("conversation_id");
+  messages.innerHTML="";
+  banner.classList.add("hidden");
+  status.textContent="New chat";
+}
+
+function stopStream(){
+  if(eventSource){
+    eventSource.close();
+    streaming=false;
+    sendBtn.disabled=false;
+    stopBtn.classList.add("hidden");
+    status.textContent="Stopped";
+  }
 }
 
 function loadConversations(){
@@ -34,18 +53,9 @@ function loadConversation(id){
       conversation_id=id;
       localStorage.setItem("conversation_id",id);
       messages.innerHTML="";
-      c.messages.forEach(m=>{
-        render(m.content,m.role==="user"?"user":"bot");
-      });
+      c.messages.forEach(m=>render(m.content,m.role==="user"?"user":"bot"));
+      banner.classList.remove("hidden");
     });
-}
-
-function render(text,cls){
-  const div=document.createElement("div");
-  div.className="msg "+cls;
-  parseMarkdown(text,div);
-  messages.appendChild(div);
-  messages.scrollTop=messages.scrollHeight;
 }
 
 function parseMarkdown(text,container){
@@ -70,29 +80,65 @@ function parseMarkdown(text,container){
     }else{
       const ptag=document.createElement("p");
       ptag.textContent=p;
+      if(/error|exception|traceback/i.test(p)) ptag.classList.add("error");
       container.appendChild(ptag);
     }
   });
 }
 
-function send(){
+function render(text,cls){
+  const div=document.createElement("div");
+  div.className="msg "+cls;
+  parseMarkdown(text,div);
+
+  if(cls==="bot"){
+    const act=document.createElement("div");
+    act.className="actions";
+    const copy=document.createElement("button");
+    copy.textContent="Copy";
+    copy.onclick=()=>navigator.clipboard.writeText(text);
+    const regen=document.createElement("button");
+    regen.textContent="Regenerate";
+    regen.onclick=()=>send(text);
+    act.appendChild(copy);
+    act.appendChild(regen);
+    div.appendChild(act);
+  }
+
+  messages.appendChild(div);
+  messages.scrollTop=messages.scrollHeight;
+}
+
+function send(textOverride=null){
+  if(streaming) return;
+
   const input=document.getElementById("input");
-  const text=input.value.trim();
+  const text=textOverride || input.value.trim();
   if(!text) return;
+
   render(text,"user");
   input.value="";
 
+  sendBtn.disabled=true;
+  stopBtn.classList.remove("hidden");
+  streaming=true;
+  status.textContent="Streaming…";
+
   const url=`/api/chat/stream?message=${encodeURIComponent(text)}&conversation_id=${conversation_id}`;
-  const es=new EventSource(url);
+  eventSource=new EventSource(url);
 
   let botText="";
   const botDiv=document.createElement("div");
   botDiv.className="msg bot";
   messages.appendChild(botDiv);
 
-  es.onmessage=e=>{
+  eventSource.onmessage=e=>{
     if(e.data==="[DONE]"){
-      es.close();
+      eventSource.close();
+      streaming=false;
+      sendBtn.disabled=false;
+      stopBtn.classList.add("hidden");
+      status.textContent="Ready";
       return;
     }
     const d=JSON.parse(e.data);
@@ -100,7 +146,6 @@ function send(){
       botText+=d.content;
       botDiv.innerHTML="";
       parseMarkdown(botText,botDiv);
-      messages.scrollTop=messages.scrollHeight;
     }
     if(d.conversation_id){
       conversation_id=d.conversation_id;
@@ -111,3 +156,4 @@ function send(){
 }
 
 loadConversations();
+if(conversation_id) banner.classList.remove("hidden");
