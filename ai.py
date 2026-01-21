@@ -44,7 +44,7 @@ class colors:
     white = "\033[0;37m"
     bright_black = "\033[1;30m"
     bright_red = "\033[1;31m"
-    bright_green = "\033[1;32m"
+    bright_green = "\033[1;33m"
     bright_yellow = "\033[1;33m"
     bright_blue = "\033[1;34m"
     bright_purple = "\033[1;35m"
@@ -90,7 +90,7 @@ def create_default_config():
         "temperature": 0.7,
         "top_p": 0.9,
         "webui_port": 5000,
-        "webui_enabled": False,
+        "webui_enabled": True,  # Default to enabled
         "stream": True,
         "max_history": 10000,
         "max_tokens": 128000,
@@ -236,6 +236,23 @@ def export_conversation(conversation_id, format="json"):
             text += "-" * 30 + "\n"
         
         return text
+    elif format == "md":
+        md = f"# {conversation['title']}\n\n"
+        md += f"**Created:** {conversation['created_at']}\n"
+        md += f"**Model:** {conversation['model']}\n"
+        md += f"**Context Window:** {conversation.get('context_window', 128000)} tokens\n"
+        md += f"**Total Messages:** {len(conversation['messages'])}\n"
+        md += f"**Total Tokens:** {conversation.get('token_count', 0)}\n\n"
+        md += "---\n\n"
+        
+        for msg in conversation['messages']:
+            role = "**User**" if msg['role'] == 'user' else "**Assistant**"
+            timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
+            md += f"### {role} ({timestamp})\n\n"
+            md += msg['content'] + "\n\n"
+            md += "---\n\n"
+        
+        return md
     return None
 
 def banner():
@@ -451,6 +468,7 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
             if for_webui:
                 yield f"data: {json.dumps({'error': error_msg})}\n\n"
             else:
+                # For terminal, return the error message directly
                 return error_msg
         
         full_response = ""
@@ -470,8 +488,8 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
                                     if for_webui:
                                         yield f"data: {json.dumps({'content': content})}\n\n"
                                     else:
-                                        sys.stdout.write(content)
-                                        sys.stdout.flush()
+                                        # For terminal, yield the content directly
+                                        yield content
                         except:
                             continue
         
@@ -483,19 +501,22 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
         
         if for_webui:
             yield f"data: [DONE]\n\n"
+        else:
+            # For terminal, yield a special marker to indicate completion
+            yield None
 
     except requests.exceptions.Timeout:
         error_msg = "[WormGPT] Request timeout. The response might be very large. Please try a shorter query."
         if for_webui:
             yield f"data: {json.dumps({'error': error_msg})}\n\n"
         else:
-            return error_msg
+            yield error_msg
     except Exception as e:
         error_msg = f"[WormGPT] Error: {str(e)}"
         if for_webui:
             yield f"data: {json.dumps({'error': error_msg})}\n\n"
         else:
-            return error_msg
+            yield error_msg
 
 def call_api_normal(user_input, conversation_id, model=None):
     config = load_config()
@@ -683,38 +704,28 @@ def chat_session():
                             f.write(export_data)
                         print(f"{colors.bright_green}✓ Exported to: {export_file}{colors.reset}")
                 elif exp_choice == "3":
-                    conversation = load_conversation(conversation_id)
-                    if conversation:
-                        md_content = f"# {conversation['title']}\n\n"
-                        md_content += f"**Created:** {conversation['created_at']}\n"
-                        md_content += f"**Model:** {conversation['model']}\n"
-                        md_content += f"**Context Window:** {conversation.get('context_window', 128000)} tokens\n"
-                        md_content += f"**Total Messages:** {len(conversation['messages'])}\n"
-                        md_content += f"**Total Tokens:** {conversation.get('token_count', 0)}\n\n"
-                        md_content += "---\n\n"
-                        
-                        for msg in conversation['messages']:
-                            role = "**User**" if msg['role'] == 'user' else "**Assistant**"
-                            timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
-                            md_content += f"### {role} [{timestamp}]\n\n"
-                            md_content += msg['content'] + "\n\n---\n\n"
-                        
+                    export_data = export_conversation(conversation_id, "md")
+                    if export_data:
                         export_file = f"conversation_{conversation_id}.md"
                         with open(export_file, "w", encoding="utf-8") as f:
-                            f.write(md_content)
+                            f.write(export_data)
                         print(f"{colors.bright_green}✓ Exported to: {export_file}{colors.reset}")
                 continue
             
             print(f"\n{colors.bright_cyan}[WormGPT]>{colors.reset}")
             
-            # Fix: Handle the generator properly
+            # FIXED: Handle the generator properly for terminal
             response_generator = call_api_stream(user_input, conversation_id, for_webui=False)
+            
             try:
-                # Try to iterate through the generator
+                # Process stream for terminal
                 for chunk in response_generator:
-                    if isinstance(chunk, str):
-                        print(chunk, end='', flush=True)
-                print()
+                    if chunk is None:
+                        break  # End of stream
+                    elif isinstance(chunk, str):
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
+                print()  # New line after response
             except Exception as e:
                 print(f"\n{colors.red}Error: {e}{colors.reset}")
             
@@ -828,25 +839,11 @@ def manage_conversations():
                             f.write(export_data)
                         print(f"{colors.bright_green}✓ Exported to: {export_file}{colors.reset}")
                 elif fmt_choice == "3":
-                    conversation = load_conversation(conversation_id)
-                    if conversation:
-                        md_content = f"# {conversation['title']}\n\n"
-                        md_content += f"**Created:** {conversation['created_at']}\n"
-                        md_content += f"**Model:** {conversation['model']}\n"
-                        md_content += f"**Context Window:** {conversation.get('context_window', 128000)} tokens\n"
-                        md_content += f"**Total Messages:** {len(conversation['messages'])}\n"
-                        md_content += f"**Total Tokens:** {conversation.get('token_count', 0)}\n\n"
-                        md_content += "---\n\n"
-                        
-                        for msg in conversation['messages']:
-                            role = "**User**" if msg['role'] == 'user' else "**Assistant**"
-                            timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%Y-%m-d %H:%M:%S")
-                            md_content += f"### {role} [{timestamp}]\n\n"
-                            md_content += msg['content'] + "\n\n---\n\n"
-                        
+                    export_data = export_conversation(conversation_id, "md")
+                    if export_data:
                         export_file = f"export_{conversation_id}.md"
                         with open(export_file, "w", encoding="utf-8") as f:
-                            f.write(md_content)
+                            f.write(export_data)
                         print(f"{colors.bright_green}✓ Exported to: {export_file}{colors.reset}")
                 
                 time.sleep(1)
@@ -949,41 +946,21 @@ def start_webui():
             data = request.json
             config = load_config()
             
-            if 'api_key' in data:
-                config['api_key'] = data['api_key']
-            if 'temperature' in data:
-                config['temperature'] = float(data['temperature'])
-            if 'top_p' in data:
-                config['top_p'] = float(data['top_p'])
-            if 'max_tokens' in data:
-                max_tokens = int(data['max_tokens'])
-                if max_tokens <= 0:
-                    config['max_tokens'] = 128000
-                else:
-                    config['max_tokens'] = max_tokens
-            if 'max_history' in data:
-                max_history = int(data['max_history'])
-                if max_history <= 0:
-                    config['max_history'] = 10000
-                else:
-                    config['max_history'] = max_history
-            if 'context_window' in data:
-                context_window = int(data['context_window'])
-                config['context_window'] = max(32000, min(context_window, 128000))
-            if 'max_input_tokens' in data:
-                max_input = int(data['max_input_tokens'])
-                config['max_input_tokens'] = max(16000, min(max_input, 64000))
-            if 'max_output_tokens' in data:
-                max_output = int(data['max_output_tokens'])
-                config['max_output_tokens'] = max(16000, min(max_output, 64000))
-            if 'language' in data:
-                config['language'] = data['language']
-            if 'model' in data:
-                config['model'] = data['model']
-            if 'auto_save' in data:
-                config['auto_save'] = bool(data['auto_save'])
-            if 'dark_mode' in data:
-                config['dark_mode'] = bool(data['dark_mode'])
+            for key in ['api_key', 'base_url', 'language', 'model']:
+                if key in data:
+                    config[key] = data[key]
+            
+            for key in ['temperature', 'top_p']:
+                if key in data:
+                    config[key] = float(data[key])
+            
+            for key in ['webui_port', 'max_history', 'max_tokens', 'context_window', 'max_input_tokens', 'max_output_tokens']:
+                if key in data:
+                    config[key] = int(data[key])
+            
+            for key in ['webui_enabled', 'stream', 'auto_save', 'auto_scroll', 'dark_mode']:
+                if key in data:
+                    config[key] = bool(data[key])
             
             save_config(config)
             return jsonify({'success': True})
@@ -999,6 +976,9 @@ def start_webui():
             if format_type == 'json':
                 mimetype = 'application/json'
                 filename = f'conversation_{conversation_id}.json'
+            elif format_type == 'md':
+                mimetype = 'text/markdown'
+                filename = f'conversation_{conversation_id}.md'
             else:
                 mimetype = 'text/plain'
                 filename = f'conversation_{conversation_id}.txt'
@@ -1352,11 +1332,13 @@ def main_menu():
         clear_screen()
         banner()
 
+        # Start WebUI automatically if enabled
         if config.get("webui_enabled", False) and not webui_running:
             print(f"{colors.bright_green}🚀 Starting WebUI...{colors.reset}")
             webui_thread = threading.Thread(target=start_webui, daemon=True)
             webui_thread.start()
-            time.sleep(2)
+            # Wait a bit for WebUI to start
+            time.sleep(3)
         
         print(f"{colors.bright_cyan}[ Main Menu - Extreme Version ]{colors.reset}")
         print(f"{colors.yellow}1. Language: {colors.green}{config['language']}{colors.reset}")
@@ -1411,16 +1393,7 @@ def main_menu():
             time.sleep(2)
 
 def main():
-    if not os.path.exists(".venv") and platform.system() != "Windows":
-        print(f"{colors.bright_yellow}⚠️  Virtual environment not found!{colors.reset}")
-        print(f"{colors.yellow}Run: {colors.cyan}./install.sh{colors.reset}")
-        choice = input(f"\n{colors.red}Install now? (y/n): {colors.reset}")
-        if choice.lower() == 'y':
-            os.system('./install.sh')
-        else:
-            print(f"{colors.red}✗ Exiting...{colors.reset}")
-            sys.exit(1)
-
+    # Check and install dependencies
     try:
         import requests
         import pyfiglet
@@ -1429,17 +1402,25 @@ def main():
         from flask_cors import CORS
     except ImportError:
         print(f"{colors.bright_yellow}⚠️ Installing dependencies...{colors.reset}")
-        if os.path.exists("requirements.txt"):
-            os.system("pip install -r requirements.txt --quiet")
-        else:
-            deps = ["requests", "pyfiglet", "langdetect", "flask", "flask-cors"]
-            os.system(f"pip install {' '.join(deps)} --quiet")
+        deps = ["requests", "pyfiglet", "langdetect", "flask", "flask-cors"]
+        os.system(f"pip install {' '.join(deps)} --quiet")
 
+    # Create necessary directories
     if not os.path.exists(CONFIG_FILE):
         save_config(create_default_config())
-
+    
     if not os.path.exists("public"):
         os.makedirs("public")
+        print(f"{colors.bright_green}✓ Created public directory for WebUI{colors.reset}")
+
+    # Check for WebUI files
+    webui_files = ['index.html', 'style.css', 'script.js']
+    missing_files = [f for f in webui_files if not os.path.exists(f"public/{f}")]
+    
+    if missing_files:
+        print(f"{colors.bright_yellow}⚠️ Missing WebUI files: {', '.join(missing_files)}{colors.reset}")
+        print(f"{colors.yellow}Please add the WebUI files to the public directory.{colors.reset}")
+        time.sleep(2)
 
     try:
         while True:
