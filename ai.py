@@ -1463,6 +1463,78 @@ def main_menu():
             print(f"\n{colors.red}✗ Error: {e}{colors.reset}")
             time.sleep(2)
 
+def is_termux():
+    """Check if running in Termux environment"""
+    return 'com.termux' in os.environ.get('PREFIX', '')
+
+def run_termux_mode():
+    """Run WebUI-only mode for Termux"""
+    config = load_config()
+    
+    clear_screen()
+    banner()
+    
+    print(f"{colors.bright_cyan}[ Termux Mode - WebUI Only ]{colors.reset}")
+    print(f"{colors.yellow}Detected Termux environment{colors.reset}")
+    print(f"{colors.yellow}Running WebUI server only (CLI disabled){colors.reset}")
+    
+    if not config.get("api_key"):
+        print(f"\n{colors.bright_red}⚠️  API Key not set!{colors.reset}")
+        print(f"{colors.yellow}1. Get API key from https://platform.deepseek.com/api_keys{colors.reset}")
+        
+        set_api_key()
+        config = load_config()  # Reload config
+        
+        if not config.get("api_key"):
+            print(f"\n{colors.red}✗ API Key still not set. Exiting...{colors.reset}")
+            sys.exit(1)
+    
+    # Auto-enable WebUI if not enabled
+    if not config.get("webui_enabled", False):
+        config["webui_enabled"] = True
+        save_config(config)
+        print(f"{colors.bright_green}✓ WebUI auto-enabled{colors.reset}")
+        time.sleep(1)
+    
+    port = config.get("webui_port", 5000)
+    
+    clear_screen()
+    banner()
+    print(f"{colors.bright_cyan}[ Termux Mode - WebUI Server ]{colors.reset}")
+    
+    print(f"\n{colors.bright_green}✅ Starting WebUI Server...{colors.reset}")
+    print(f"{colors.bright_cyan}🌐 URL: {colors.yellow}http://127.0.0.1:{port}{colors.reset}")
+    print(f"{colors.bright_cyan}📱 Mobile URL: {colors.yellow}http://[YOUR-IP]:{port}{colors.reset}")
+    
+    # টোকেন স্ট্যাটাস
+    max_tokens = config.get("max_tokens", 0)
+    if max_tokens == 0:
+        print(f"{colors.bright_green}∞ Unlimited Tokens Active!{colors.reset}")
+    else:
+        print(f"{colors.bright_green}🚀 Token Limit: {max_tokens}{colors.reset}")
+    
+    # মেমোরি স্ট্যাটাস
+    max_history = config.get("max_history", 0)
+    if max_history == 0:
+        print(f"{colors.bright_green}💾 Unlimited Conversation Memory Active!{colors.reset}")
+    else:
+        print(f"{colors.bright_green}💾 Memory Limit: {max_history} messages{colors.reset}")
+    
+    print(f"{colors.bright_green}🚀 Real-time Streaming Active!{colors.reset}")
+    print(f"{colors.bright_green}🎨 Professional ChatGPT-style UI Active!{colors.reset}")
+    print(f"\n{colors.yellow}Press Ctrl+C to stop the server{colors.reset}")
+    print(f"{colors.yellow}Note: Terminal will remain responsive while server runs{colors.reset}")
+    
+    try:
+        # Start WebUI directly (not in a thread)
+        start_webui()  # This will run Flask app.run() which is blocking
+    except KeyboardInterrupt:
+        print(f"\n{colors.bright_cyan}✓ WebUI server stopped{colors.reset}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{colors.red}✗ Error: {e}{colors.reset}")
+        sys.exit(1)
+
 def main():
     if not os.path.exists(".venv") and platform.system() != "Windows":
         print(f"{colors.bright_yellow}⚠️  Virtual environment not found!{colors.reset}")
@@ -1500,15 +1572,20 @@ def main():
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
 
-    try:
-        while True:
-            main_menu()
-    except KeyboardInterrupt:
-        print(f"\n{colors.red}✗ Cancelled! Exiting...{colors.reset}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n{colors.red}✗ Fatal error: {e}{colors.reset}")
-        sys.exit(1)
+    # Detect if running in Termux
+    if is_termux():
+        run_termux_mode()
+    else:
+        # Desktop mode - run main menu
+        try:
+            while True:
+                main_menu()
+        except KeyboardInterrupt:
+            print(f"\n{colors.red}✗ Cancelled! Exiting...{colors.reset}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"\n{colors.red}✗ Fatal error: {e}{colors.reset}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
