@@ -13,27 +13,22 @@
   <!-- SIDEBAR -->
   <aside class="sidebar" id="sidebar">
     <div class="logo">🐛 WormGPT</div>
-
     <button class="new-chat" onclick="newChat()">＋ New Chat</button>
-
     <div id="conversationList" class="conversations"></div>
-
-    <div class="bottom">
-      <span>∞ Unlimited Memory</span>
-    </div>
+    <div class="bottom">∞ Unlimited Memory</div>
   </aside>
 
-  <!-- MAIN -->
+  <!-- CHAT -->
   <main class="chat">
     <header>
       <button class="menu-btn" onclick="toggleSidebar()">☰</button>
-      <span id="model">DeepSeek Chat</span>
+      <span>DeepSeek Chat</span>
     </header>
 
     <div id="messages" class="messages"></div>
 
     <footer>
-      <input id="input" placeholder="Message WormGPT..." />
+      <input id="input" placeholder="Message WormGPT…" />
       <button onclick="send()">➤</button>
     </footer>
   </main>
