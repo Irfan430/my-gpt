@@ -72,9 +72,9 @@ def load_config():
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 config = json.load(f)
                 if "max_history" not in config:
-                    config["max_history"] = 10000  # খুব বড় সংখ্যা
+                    config["max_history"] = 10000
                 if "max_tokens" not in config:
-                    config["max_tokens"] = 128000  # সর্বোচ্চ সম্ভাব্য টোকেন
+                    config["max_tokens"] = 128000
                 return config
         except:
             return create_default_config()
@@ -92,14 +92,14 @@ def create_default_config():
         "webui_port": 5000,
         "webui_enabled": False,
         "stream": True,
-        "max_history": 10000,  # প্রায় আনলিমিটেড কনভার্সেশন মেমরি
-        "max_tokens": 128000,  # সর্বোচ্চ টোকেন লিমিট
+        "max_history": 10000,
+        "max_tokens": 128000,
         "auto_save": True,
         "auto_scroll": True,
         "dark_mode": True,
-        "context_window": 128000,  # কন্টেক্সট উইন্ডো
-        "max_input_tokens": 64000,  # ইনপুট টোকেন লিমিট
-        "max_output_tokens": 64000  # আউটপুট টোকেন লিমিট
+        "context_window": 128000,
+        "max_input_tokens": 64000,
+        "max_output_tokens": 64000
     }
 
 def save_config(config):
@@ -154,7 +154,6 @@ def save_conversation_message(conversation_id, role, content, tokens=0):
         
         conversation["token_count"] = conversation.get("token_count", 0) + tokens
         
-        # 50000 মেসেজ পর্যন্ত সেভ করবে
         if len(conversation["messages"]) > 50000:
             conversation["messages"] = conversation["messages"][-50000:]
         
@@ -380,9 +379,6 @@ def format_terminal_output(text):
     return '\n'.join(formatted_lines)
 
 def smart_context_management(messages, max_context_tokens=120000):
-    """
-    স্মার্ট কন্টেক্সট ম্যানেজমেন্ট - গুরুত্বপূর্ণ মেসেজ রাখবে, পুরানো গুলো কম্প্রেস করবে
-    """
     if not messages:
         return []
     
@@ -391,14 +387,12 @@ def smart_context_management(messages, max_context_tokens=120000):
     if total_tokens <= max_context_tokens:
         return messages
     
-    # প্রথম 20% এবং শেষ 80% মেসেজ রাখবে
     keep_count = max(10, len(messages) // 5)
-    important_messages = messages[:keep_count]  # শুরুর গুরুত্বপূর্ণ মেসেজ
-    recent_messages = messages[-keep_count*4:]  # সাম্প্রতিক মেসেজ
+    important_messages = messages[:keep_count]
+    recent_messages = messages[-keep_count*4:]
     
     combined = important_messages + recent_messages
     
-    # ডুপ্লিকেট রিমুভ
     seen = set()
     unique_messages = []
     for msg in combined:
@@ -422,7 +416,6 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
     api_messages = []
     api_messages.append({"role": "system", "content": get_system_prompt()})
 
-    # স্মার্ট কন্টেক্সট ম্যানেজমেন্ট
     context_messages = smart_context_management(messages, config.get("context_window", 120000))
     
     for msg in context_messages:
@@ -436,7 +429,6 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
             "Content-Type": "application/json"
         }
         
-        # সর্বোচ্চ টোকেন লিমিট - বড় প্রজেক্টের জন্য
         data = {
             "model": current_model,
             "messages": api_messages,
@@ -451,7 +443,7 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
             headers=headers,
             json=data,
             stream=True,
-            timeout=600  # বড় রেসপন্সের জন্য লম্বা টাইমআউট
+            timeout=600
         )
         
         if response.status_code != 200:
@@ -518,7 +510,6 @@ def call_api_normal(user_input, conversation_id, model=None):
     api_messages = []
     api_messages.append({"role": "system", "content": get_system_prompt()})
 
-    # স্মার্ট কন্টেক্সট ম্যানেজমেন্ট
     context_messages = smart_context_management(messages, config.get("context_window", 120000))
     
     for msg in context_messages:
@@ -638,7 +629,6 @@ def chat_session():
             elif command == "history":
                 print(f"\n{colors.bright_cyan}[ Conversation History ]{colors.reset}")
                 messages = get_conversation_messages(conversation_id)
-                # শেষ 15টা মেসেজ দেখাবে
                 for msg in messages[-15:]:
                     role = "You" if msg["role"] == "user" else "WormGPT"
                     timestamp = datetime.fromisoformat(msg["timestamp"]).strftime("%H:%M")
@@ -657,7 +647,6 @@ def chat_session():
                 print(f"{colors.yellow}Context Window: {colors.green}{conversation.get('context_window', 128000):,}{colors.reset}")
                 print(f"{colors.yellow}Available Tokens: {colors.green}{conversation.get('context_window', 128000) - total_tokens:,}{colors.reset}")
                 
-                # টোকেন ডিস্ট্রিবিউশন
                 if messages:
                     print(f"\n{colors.yellow}Token Distribution:{colors.reset}")
                     user_msgs = [m for m in messages if m['role'] == 'user']
@@ -694,7 +683,6 @@ def chat_session():
                             f.write(export_data)
                         print(f"{colors.bright_green}✓ Exported to: {export_file}{colors.reset}")
                 elif exp_choice == "3":
-                    # Markdown এক্সপোর্ট
                     conversation = load_conversation(conversation_id)
                     if conversation:
                         md_content = f"# {conversation['title']}\n\n"
@@ -719,12 +707,16 @@ def chat_session():
             
             print(f"\n{colors.bright_cyan}[WormGPT]>{colors.reset}")
             
+            # Fix: Handle the generator properly
             response_generator = call_api_stream(user_input, conversation_id, for_webui=False)
-            for chunk in response_generator:
-                if isinstance(chunk, str):
-                    print(chunk)
-            
-            print()
+            try:
+                # Try to iterate through the generator
+                for chunk in response_generator:
+                    if isinstance(chunk, str):
+                        print(chunk, end='', flush=True)
+                print()
+            except Exception as e:
+                print(f"\n{colors.red}Error: {e}{colors.reset}")
             
         except KeyboardInterrupt:
             print(f"\n{colors.red}✗ Interrupted! Saving conversation...{colors.reset}")
@@ -782,7 +774,6 @@ def manage_conversations():
                 print(f"{colors.yellow}Messages: {colors.green}{len(conversation['messages'])}{colors.reset}")
                 print(f"{colors.yellow}Tokens: {colors.green}{conversation.get('token_count', 0):,}{colors.reset}")
                 
-                # টোকেন স্ট্যাটিসটিক্স
                 if conversation['messages']:
                     total_chars = sum(len(msg['content']) for msg in conversation['messages'])
                     avg_chars = total_chars // len(conversation['messages'])
@@ -849,7 +840,7 @@ def manage_conversations():
                         
                         for msg in conversation['messages']:
                             role = "**User**" if msg['role'] == 'user' else "**Assistant**"
-                            timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
+                            timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%Y-%m-d %H:%M:%S")
                             md_content += f"### {role} [{timestamp}]\n\n"
                             md_content += msg['content'] + "\n\n---\n\n"
                         
