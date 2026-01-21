@@ -1,159 +1,132 @@
-let conversation_id = localStorage.getItem("conversation_id") || "";
-let eventSource = null;
-let streaming = false;
-
-const messages = document.getElementById("messages");
-const convList = document.getElementById("conversationList");
-const banner = document.getElementById("banner");
-const sendBtn = document.getElementById("sendBtn");
+const messagesEl = document.getElementById("messages");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
 const stopBtn = document.getElementById("stopBtn");
-const status = document.getElementById("status");
+const statusEl = document.getElementById("status");
+const newChatBtn = document.getElementById("newChat");
+const convList = document.getElementById("conversationList");
 
-function toggleSidebar(){
-  document.getElementById("sidebar").classList.toggle("show");
-}
+let conversation_id = localStorage.getItem("conversation_id") || "";
+let streaming = false;
+let eventSource = null;
 
-function newChat(){
-  conversation_id = "";
-  localStorage.removeItem("conversation_id");
-  messages.innerHTML="";
-  banner.classList.add("hidden");
-  status.textContent="New chat";
-}
+/* ---------- RENDER ---------- */
+function render(text, role){
+  const div = document.createElement("div");
+  div.className = "msg " + role;
 
-function stopStream(){
-  if(eventSource){
-    eventSource.close();
-    streaming=false;
-    sendBtn.disabled=false;
-    stopBtn.classList.add("hidden");
-    status.textContent="Stopped";
+  if(/error|exception|traceback/i.test(text)){
+    div.classList.add("error");
   }
+
+  div.innerHTML = format(text);
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-function loadConversations(){
-  fetch("/api/conversations")
-    .then(r=>r.json())
-    .then(list=>{
-      convList.innerHTML="";
-      list.forEach(c=>{
-        const d=document.createElement("div");
-        d.className="conv";
-        d.textContent=c.title;
-        d.onclick=()=>loadConversation(c.id);
-        convList.appendChild(d);
-      });
-    });
-}
-
-function loadConversation(id){
-  fetch(`/api/conversation/${id}`)
-    .then(r=>r.json())
-    .then(c=>{
-      conversation_id=id;
-      localStorage.setItem("conversation_id",id);
-      messages.innerHTML="";
-      c.messages.forEach(m=>render(m.content,m.role==="user"?"user":"bot"));
-      banner.classList.remove("hidden");
-    });
-}
-
-function parseMarkdown(text,container){
-  const parts=text.split(/```/);
-  parts.forEach((p,i)=>{
-    if(i%2){
-      const lines=p.split("\n");
-      const lang=lines.shift();
-      const code=lines.join("\n");
-      const header=document.createElement("div");
-      header.className="code-header";
-      header.innerHTML=`<span>${lang}</span>`;
-      const btn=document.createElement("button");
-      btn.className="copy-btn";
-      btn.textContent="Copy";
-      btn.onclick=()=>navigator.clipboard.writeText(code);
-      header.appendChild(btn);
-      const pre=document.createElement("pre");
-      pre.textContent=code;
-      container.appendChild(header);
-      container.appendChild(pre);
-    }else{
-      const ptag=document.createElement("p");
-      ptag.textContent=p;
-      if(/error|exception|traceback/i.test(p)) ptag.classList.add("error");
-      container.appendChild(ptag);
-    }
+function format(text){
+  return text.replace(/```([\s\S]*?)```/g, (_, code)=>{
+    const escaped = code.replace(/</g,"&lt;");
+    return `
+      <pre>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText(\`${escaped}\`)">Copy</button>
+        ${escaped}
+      </pre>
+    `;
   });
 }
 
-function render(text,cls){
-  const div=document.createElement("div");
-  div.className="msg "+cls;
-  parseMarkdown(text,div);
-
-  if(cls==="bot"){
-    const act=document.createElement("div");
-    act.className="actions";
-    const copy=document.createElement("button");
-    copy.textContent="Copy";
-    copy.onclick=()=>navigator.clipboard.writeText(text);
-    const regen=document.createElement("button");
-    regen.textContent="Regenerate";
-    regen.onclick=()=>send(text);
-    act.appendChild(copy);
-    act.appendChild(regen);
-    div.appendChild(act);
+/* ---------- SEND ---------- */
+sendBtn.onclick = ()=>send();
+input.addEventListener("keydown",e=>{
+  if(e.key==="Enter" && !e.shiftKey){
+    e.preventDefault();
+    send();
   }
+});
 
-  messages.appendChild(div);
-  messages.scrollTop=messages.scrollHeight;
-}
-
-function send(textOverride=null){
+function send(){
   if(streaming) return;
 
-  const input=document.getElementById("input");
-  const text=textOverride || input.value.trim();
+  const text = input.value.trim();
   if(!text) return;
 
   render(text,"user");
-  input.value="";
+  input.value = "";
 
-  sendBtn.disabled=true;
+  streaming = true;
+  statusEl.textContent = "Thinking…";
+  sendBtn.disabled = true;
   stopBtn.classList.remove("hidden");
-  streaming=true;
-  status.textContent="Streaming…";
 
-  const url=`/api/chat/stream?message=${encodeURIComponent(text)}&conversation_id=${conversation_id}`;
-  eventSource=new EventSource(url);
+  const url = `/api/chat/stream?message=${encodeURIComponent(text)}&conversation_id=${conversation_id}`;
+  eventSource = new EventSource(url);
 
-  let botText="";
-  const botDiv=document.createElement("div");
-  botDiv.className="msg bot";
-  messages.appendChild(botDiv);
+  let full = "";
 
-  eventSource.onmessage=e=>{
-    if(e.data==="[DONE]"){
-      eventSource.close();
-      streaming=false;
-      sendBtn.disabled=false;
+  eventSource.onmessage = e=>{
+    if(e.data === "[DONE]"){
+      streaming = false;
+      sendBtn.disabled = false;
       stopBtn.classList.add("hidden");
-      status.textContent="Ready";
+      statusEl.textContent = "Ready";
+      eventSource.close();
       return;
     }
-    const d=JSON.parse(e.data);
-    if(d.content){
-      botText+=d.content;
-      botDiv.innerHTML="";
-      parseMarkdown(botText,botDiv);
-    }
-    if(d.conversation_id){
-      conversation_id=d.conversation_id;
-      localStorage.setItem("conversation_id",conversation_id);
-      loadConversations();
+    const data = JSON.parse(e.data);
+    if(data.content){
+      full += data.content;
+      if(!document.getElementById("streaming")){
+        render("", "bot").id="streaming";
+      }
+      document.getElementById("streaming").innerHTML = format(full);
     }
   };
 }
 
-loadConversations();
-if(conversation_id) banner.classList.remove("hidden");
+/* ---------- STOP ---------- */
+stopBtn.onclick = ()=>{
+  if(eventSource){
+    eventSource.close();
+    streaming = false;
+    conversation_id = "";
+    localStorage.removeItem("conversation_id");
+    statusEl.textContent = "Stopped (context reset)";
+    sendBtn.disabled = false;
+    stopBtn.classList.add("hidden");
+  }
+};
+
+/* ---------- NEW CHAT ---------- */
+newChatBtn.onclick = ()=>{
+  if(streaming) return;
+  conversation_id = "";
+  localStorage.removeItem("conversation_id");
+  messagesEl.innerHTML = "";
+  statusEl.textContent = "New chat";
+};
+
+/* ---------- LOAD CONVERSATIONS ---------- */
+fetch("/api/conversations")
+  .then(r=>r.json())
+  .then(list=>{
+    convList.innerHTML="";
+    list.forEach(c=>{
+      const li = document.createElement("li");
+      li.textContent = c.title;
+      li.onclick = ()=>{
+        if(streaming) return;
+        conversation_id = c.id;
+        localStorage.setItem("conversation_id",conversation_id);
+        messagesEl.innerHTML="";
+        fetch(`/api/conversation/${c.id}`)
+          .then(r=>r.json())
+          .then(conv=>{
+            conv.messages.forEach(m=>{
+              render(m.content, m.role==="user"?"user":"bot");
+            });
+          });
+      };
+      convList.appendChild(li);
+    });
+  });
