@@ -1,153 +1,107 @@
-let conversationId = "";
+let chatArea = document.getElementById("chatArea");
+let userInput = document.getElementById("userInput");
+let sendBtn = document.getElementById("sendBtn");
+let stopBtn = document.getElementById("stopBtn");
+let newChatBtn = document.getElementById("newChatBtn");
+
 let eventSource = null;
+let conversationId = localStorage.getItem("conversation_id") || "";
 
-const messagesEl = document.getElementById("messages");
-const inputEl = document.getElementById("userInput");
-const sendBtn = document.getElementById("sendBtn");
-const stopBtn = document.getElementById("stopBtn");
-const convList = document.getElementById("conversationList");
-const newChatBtn = document.getElementById("newChat");
+function addMessage(role, html) {
+  const msg = document.createElement("div");
+  msg.className = "message " + role;
 
-/* ---------- Render message with code support ---------- */
-function renderBotMessage(container, text) {
-  const parts = text.split(/```/);
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.innerHTML = html;
 
-  parts.forEach((part, i) => {
-    if (i % 2 === 0) {
-      if (part.trim()) {
-        const p = document.createElement("div");
-        p.textContent = part;
-        container.appendChild(p);
-      }
-    } else {
-      const block = document.createElement("div");
-      block.className = "code-block";
-
-      const header = document.createElement("div");
-      header.className = "code-header";
-
-      const label = document.createElement("span");
-      label.textContent = "code";
-
-      const copy = document.createElement("span");
-      copy.className = "copy-btn";
-      copy.textContent = "Copy";
-
-      copy.onclick = () => {
-        navigator.clipboard.writeText(part);
-        copy.textContent = "Copied";
-        setTimeout(() => copy.textContent = "Copy", 1000);
-      };
-
-      header.appendChild(label);
-      header.appendChild(copy);
-
-      const pre = document.createElement("pre");
-      pre.textContent = part;
-
-      block.appendChild(header);
-      block.appendChild(pre);
-      container.appendChild(block);
-    }
-  });
+  msg.appendChild(bubble);
+  chatArea.appendChild(msg);
+  chatArea.scrollTop = chatArea.scrollHeight;
 }
 
-/* ---------- Simple bubble ---------- */
-function addMessage(text, cls) {
-  const div = document.createElement("div");
-  div.className = "msg " + cls;
+function parseAssistantMessage(text) {
+  const parts = text.split(/```/);
+  let html = "";
 
-  if (cls === "bot") {
-    renderBotMessage(div, text);
-  } else {
-    div.textContent = text;
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 0) {
+      html += `<div>${parts[i]}</div>`;
+    } else {
+      const lines = parts[i].split("\n");
+      const lang = lines.shift().trim() || "text";
+      const code = lines.join("\n");
+
+      html += `
+        <div class="code-block">
+          <div class="code-header">
+            <span>${lang}</span>
+            <button onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre><code class="language-${lang}">${escapeHtml(code)}</code></pre>
+        </div>
+      `;
+    }
   }
 
-  messagesEl.appendChild(div);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-  return div;
+  return html;
 }
 
-/* ---------- Conversations ---------- */
-function loadConversations() {
-  fetch("/api/conversations")
-    .then(r => r.json())
-    .then(list => {
-      convList.innerHTML = "";
-      list.forEach(c => {
-        const d = document.createElement("div");
-        d.className = "conv";
-        d.textContent = c.title || "Conversation";
-        d.onclick = () => loadConversation(c.id);
-        convList.appendChild(d);
-      });
-    });
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, m =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[m])
+  );
 }
 
-function loadConversation(id) {
-  fetch(`/api/conversation/${id}`)
-    .then(r => r.json())
-    .then(c => {
-      conversationId = c.id;
-      messagesEl.innerHTML = "";
-      c.messages.forEach(m => {
-        addMessage(m.content, m.role === "user" ? "user" : "bot");
-      });
-    });
-}
+window.copyCode = function (btn) {
+  const code = btn.parentElement.nextElementSibling.innerText;
+  navigator.clipboard.writeText(code);
+  btn.innerText = "Copied ✓";
+  setTimeout(() => (btn.innerText = "Copy"), 1200);
+};
 
-/* ---------- Send ---------- */
 sendBtn.onclick = () => {
-  const text = inputEl.value.trim();
-  if (!text) return;
+  const text = userInput.value.trim();
+  if (!text || eventSource) return;
 
-  inputEl.value = "";
-  addMessage(text, "user");
+  userInput.value = "";
+  addMessage("user", text);
 
-  if (eventSource) eventSource.close();
-
-  sendBtn.disabled = true;
   stopBtn.disabled = false;
 
-  let buffer = "";
-  const botDiv = document.createElement("div");
-  botDiv.className = "msg bot";
-  messagesEl.appendChild(botDiv);
+  eventSource = new EventSource(
+    `/api/chat/stream?message=${encodeURIComponent(text)}&conversation_id=${conversationId}`
+  );
 
-  const url =
-    `/api/chat/stream?message=${encodeURIComponent(text)}` +
-    (conversationId ? `&conversation_id=${conversationId}` : "");
+  let fullReply = "";
 
-  eventSource = new EventSource(url);
-
-  eventSource.onmessage = e => {
+  eventSource.onmessage = (e) => {
     if (e.data === "[DONE]") {
-      botDiv.innerHTML = "";
-      renderBotMessage(botDiv, buffer);
-      sendBtn.disabled = false;
+      eventSource.close();
+      eventSource = null;
       stopBtn.disabled = true;
-      loadConversations();
+      addMessage("assistant", parseAssistantMessage(fullReply));
+      hljs.highlightAll();
       return;
     }
 
     const data = JSON.parse(e.data);
-    if (data.content) buffer += data.content;
+    if (data.content) {
+      fullReply += data.content;
+    }
   };
 };
 
-/* ---------- Stop ---------- */
 stopBtn.onclick = () => {
   if (eventSource) {
     eventSource.close();
-    sendBtn.disabled = false;
+    eventSource = null;
     stopBtn.disabled = true;
   }
 };
 
-/* ---------- New chat ---------- */
 newChatBtn.onclick = () => {
   conversationId = "";
-  messagesEl.innerHTML = "";
+  localStorage.removeItem("conversation_id");
+  chatArea.innerHTML = "";
 };
-
-loadConversations();
