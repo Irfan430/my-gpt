@@ -8,23 +8,10 @@ const newChatBtn = document.getElementById("newChatBtn");
 
 let eventSource = null;
 let conversationId = localStorage.getItem("conversation_id") || "";
-let sidebarState = 0;
+let activeAssistantBubble = null;
+let fullText = "";
 
-/* ---------------- helpers ---------------- */
-
-function addMessage(role, html) {
-  const msg = document.createElement("div");
-  msg.className = "message " + role;
-
-  const bubble = document.createElement("div");
-  bubble.className = "bubble";
-  bubble.innerHTML = html;
-
-  msg.appendChild(bubble);
-  chatArea.appendChild(msg);
-  chatArea.scrollTop = chatArea.scrollHeight;
-  return bubble;
-}
+/* ---------- helpers ---------- */
 
 function escapeHtml(str) {
   return str.replace(/[&<>"']/g, m =>
@@ -32,119 +19,113 @@ function escapeHtml(str) {
   );
 }
 
-/* ---------------- code parser ---------------- */
+function addMessage(role, html = "") {
+  const msg = document.createElement("div");
+  msg.className = "message " + role;
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.innerHTML = html;
+  msg.appendChild(bubble);
+  chatArea.appendChild(msg);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  return bubble;
+}
 
-function parseMessage(text) {
+/* ---------- code parsing ---------- */
+
+function renderParsed(text) {
   const parts = text.split(/```/);
   let out = "";
 
   parts.forEach((p, i) => {
     if (i % 2 === 0) {
-      if (p.trim()) out += `<div>${escapeHtml(p)}</div>`;
+      out += `<div>${escapeHtml(p)}</div>`;
     } else {
       const lines = p.split("\n");
       const lang = lines.shift() || "code";
       const code = lines.join("\n");
-
       out += `
         <div class="code-block">
           <div class="code-header">
             <span>${lang}</span>
             <button onclick="copyCode(this)">Copy</button>
           </div>
-          <pre><code class="language-${lang}">${escapeHtml(code)}</code></pre>
+          <pre>${escapeHtml(code)}</pre>
         </div>`;
     }
   });
-
   return out;
 }
 
-window.copyCode = (btn) => {
-  navigator.clipboard.writeText(
-    btn.parentElement.nextElementSibling.innerText
-  );
+window.copyCode = btn => {
+  const code = btn.parentElement.nextElementSibling.innerText;
+  navigator.clipboard.writeText(code);
   btn.innerText = "✓";
-  setTimeout(() => (btn.innerText = "Copy"), 1000);
+  setTimeout(() => btn.innerText = "Copy", 1000);
 };
 
-/* ---------------- incomplete detect ---------------- */
+/* ---------- streaming ---------- */
 
-function isIncomplete(text) {
-  const fences = (text.match(/```/g) || []).length;
-  return fences % 2 !== 0;
-}
-
-function showContinueButton(bubble) {
-  const box = document.createElement("div");
-  box.className = "continue-box";
-
-  const btn = document.createElement("button");
-  btn.textContent = "↻ Continue";
-  btn.onclick = () => {
-    box.remove();
-    sendContinue();
-  };
-
-  box.appendChild(btn);
-  bubble.appendChild(box);
-}
-
-/* ---------------- stream core ---------------- */
-
-function startStream(message) {
-  const assistantBubble = addMessage("assistant", "");
-  let full = "";
-
+function startStream(message, isContinue = false) {
   stopBtn.disabled = false;
+
+  if (!isContinue) {
+    addMessage("user", escapeHtml(message));
+    activeAssistantBubble = addMessage("assistant", "");
+    fullText = "";
+  }
 
   eventSource = new EventSource(
     `/api/chat/stream?message=${encodeURIComponent(message)}&conversation_id=${conversationId}`
   );
 
-  eventSource.onmessage = (e) => {
+  eventSource.onmessage = e => {
     if (e.data === "[DONE]") {
       eventSource.close();
       eventSource = null;
       stopBtn.disabled = true;
 
-      assistantBubble.innerHTML = parseMessage(full);
-      hljs.highlightAll();
+      activeAssistantBubble.innerHTML = renderParsed(fullText);
 
-      if (isIncomplete(full)) {
-        showContinueButton(assistantBubble);
+      if (needsContinue(fullText)) {
+        const btn = document.createElement("button");
+        btn.className = "continue-btn";
+        btn.innerText = "↻ Continue";
+        btn.onclick = () => {
+          btn.remove();
+          startStream("continue from where you stopped", true);
+        };
+        activeAssistantBubble.appendChild(btn);
       }
       return;
     }
 
-    let data;
-    try {
-      data = JSON.parse(e.data);
-    } catch {
-      return;
-    }
-
-    // 🔥 conversation memory FIX
-    if (data.conversation_id && !conversationId) {
+    const data = JSON.parse(e.data);
+    if (data.conversation_id) {
       conversationId = data.conversation_id;
       localStorage.setItem("conversation_id", conversationId);
     }
-
     if (data.content) {
-      full += data.content;
-      assistantBubble.textContent = full; // live typing
+      fullText += data.content;
+      activeAssistantBubble.textContent = fullText;
     }
   };
 }
 
-/* ---------------- send ---------------- */
+/* ---------- detect incomplete ---------- */
+
+function needsContinue(text) {
+  const fences = (text.match(/```/g) || []).length;
+  return fences % 2 !== 0 || text.trim().length < 20;
+}
+
+/* ---------- controls ---------- */
 
 sendBtn.onclick = () => {
+  if (eventSource) return;
   const text = userInput.value.trim();
-  if (!text || eventSource) return;
-
+  if (!text) return;
   userInput.value = "";
-  addMessage("user", escapeHtml(text));
   startStream(text);
 };
 
@@ -156,20 +137,8 @@ stopBtn.onclick = () => {
   }
 };
 
-/* ---------------- continue ---------------- */
-
-function sendContinue() {
-  if (eventSource) return;
-  startStream("continue from where you stopped, do not repeat previous content");
-}
-
-/* ---------------- sidebar ---------------- */
-
 toggleSidebar.onclick = () => {
-  sidebarState = (sidebarState + 1) % 3;
-  sidebar.classList.remove("hidden", "compact");
-  if (sidebarState === 0) sidebar.classList.add("hidden");
-  if (sidebarState === 1) sidebar.classList.add("compact");
+  sidebar.classList.toggle("hidden");
 };
 
 newChatBtn.onclick = () => {
