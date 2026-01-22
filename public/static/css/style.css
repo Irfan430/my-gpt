@@ -98,7 +98,25 @@ body {
   cursor: pointer;
 }
 
-pre { padding: 12px; overflow-x: auto; background: #020617; }
+pre {
+  padding: 12px;
+  overflow-x: auto;
+  background: #020617;
+}
+
+/* Continue */
+.continue-box {
+  margin-top: 10px;
+}
+
+.continue-box button {
+  background: #2563eb;
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
 
 /* Input */
 .input-area {
