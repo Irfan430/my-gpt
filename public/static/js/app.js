@@ -1,10 +1,24 @@
+const chatArea = document.getElementById("chatArea");
+const userInput = document.getElementById("userInput");
+const sendBtn = document.getElementById("sendBtn");
+const stopBtn = document.getElementById("stopBtn");
+const toggleSidebar = document.getElementById("toggleSidebar");
+const sidebar = document.getElementById("sidebar");
+const newChatBtn = document.getElementById("newChatBtn");
+
 let eventSource = null;
 let conversationId = localStorage.getItem("conversation_id") || "";
-let currentAssistantBubble = null;
+let assistantBubble = null;
 let fullText = "";
 let streaming = false;
 
-/* ---------------- helpers ---------------- */
+/* ---------- helpers ---------- */
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, m =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m])
+  );
+}
 
 function addMessage(role, html = "") {
   const msg = document.createElement("div");
@@ -20,13 +34,7 @@ function addMessage(role, html = "") {
   return bubble;
 }
 
-function escapeHtml(str) {
-  return str.replace(/[&<>"']/g, m =>
-    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m])
-  );
-}
-
-/* ---------------- markdown + code ---------------- */
+/* ---------- render markdown + code ---------- */
 
 function renderMessage(text) {
   const parts = text.split(/```/);
@@ -46,7 +54,7 @@ function renderMessage(text) {
             <span>${lang}</span>
             <button onclick="copyCode(this)">Copy</button>
           </div>
-          <pre><code>${escapeHtml(code)}</code></pre>
+          <pre>${escapeHtml(code)}</pre>
         </div>`;
     }
   });
@@ -55,13 +63,14 @@ function renderMessage(text) {
 }
 
 window.copyCode = btn => {
-  const code = btn.parentElement.nextElementSibling.innerText;
-  navigator.clipboard.writeText(code);
+  navigator.clipboard.writeText(
+    btn.parentElement.nextElementSibling.innerText
+  );
   btn.innerText = "✓";
   setTimeout(() => (btn.innerText = "Copy"), 1000);
 };
 
-/* ---------------- incomplete detect ---------------- */
+/* ---------- incomplete detect ---------- */
 
 function isIncomplete(text) {
   const fences = (text.match(/```/g) || []).length;
@@ -71,7 +80,7 @@ function isIncomplete(text) {
   return last && !/[.!?]$/.test(last);
 }
 
-/* ---------------- Continue Button ---------------- */
+/* ---------- Continue ---------- */
 
 function showContinue() {
   removeContinue();
@@ -80,55 +89,58 @@ function showContinue() {
   box.className = "continue-box";
 
   const btn = document.createElement("button");
-  btn.textContent = "↻ Continue";
+  btn.innerText = "↻ Continue";
   btn.onclick = () => {
     removeContinue();
-    startStream("__CONTINUE__", true);
+    startStream(true);
   };
 
   box.appendChild(btn);
-  currentAssistantBubble.appendChild(box);
+  assistantBubble.appendChild(box);
 }
 
 function removeContinue() {
-  const old = currentAssistantBubble?.querySelector(".continue-box");
+  const old = assistantBubble?.querySelector(".continue-box");
   if (old) old.remove();
 }
 
-/* ---------------- Streaming Core ---------------- */
+/* ---------- Streaming ---------- */
 
-function startStream(message, isContinue = false) {
+function startStream(isContinue = false) {
   if (streaming) return;
-
   streaming = true;
+  stopBtn.disabled = false;
 
   if (!isContinue) {
-    addMessage("user", escapeHtml(message));
-    currentAssistantBubble = addMessage("assistant", "");
+    addMessage("user", escapeHtml(userInput.value));
+    assistantBubble = addMessage("assistant", "");
     fullText = "";
   }
 
-  const url =
-    `/api/chat/stream?message=${encodeURIComponent(
-      isContinue
-        ? "continue from where you stopped, do not repeat"
-        : message
-    )}&conversation_id=${conversationId}`;
+  const message = isContinue
+    ? "continue from where you stopped, do not repeat"
+    : userInput.value;
 
-  eventSource = new EventSource(url);
+  userInput.value = "";
+
+  eventSource = new EventSource(
+    `/api/chat/stream?message=${encodeURIComponent(message)}&conversation_id=${conversationId}`
+  );
 
   eventSource.onmessage = e => {
     if (e.data === "[DONE]") {
       eventSource.close();
       eventSource = null;
       streaming = false;
+      stopBtn.disabled = true;
 
-      currentAssistantBubble.innerHTML = renderMessage(fullText);
+      assistantBubble.innerHTML = renderMessage(fullText);
       if (isIncomplete(fullText)) showContinue();
       return;
     }
 
     const data = JSON.parse(e.data);
+
     if (data.conversation_id) {
       conversationId = data.conversation_id;
       localStorage.setItem("conversation_id", conversationId);
@@ -137,18 +149,16 @@ function startStream(message, isContinue = false) {
 
     if (data.content) {
       fullText += data.content;
-      currentAssistantBubble.textContent = fullText; // live typing
+      assistantBubble.textContent = fullText;
     }
   };
 }
 
-/* ---------------- UI Actions ---------------- */
+/* ---------- UI controls ---------- */
 
 sendBtn.onclick = () => {
-  const text = userInput.value.trim();
-  if (!text) return;
-  userInput.value = "";
-  startStream(text);
+  if (!userInput.value.trim()) return;
+  startStream(false);
 };
 
 stopBtn.onclick = () => {
@@ -156,17 +166,22 @@ stopBtn.onclick = () => {
     eventSource.close();
     eventSource = null;
     streaming = false;
+    stopBtn.disabled = true;
     if (isIncomplete(fullText)) showContinue();
   }
 };
 
-/* ---------------- Sidebar Toggle (3-state FIXED) ---------------- */
-
+/* Sidebar toggle */
 let sidebarState = 0;
 toggleSidebar.onclick = () => {
   sidebarState = (sidebarState + 1) % 3;
   sidebar.classList.remove("hidden", "compact");
-
   if (sidebarState === 0) sidebar.classList.add("hidden");
   if (sidebarState === 1) sidebar.classList.add("compact");
+};
+
+newChatBtn.onclick = () => {
+  conversationId = "";
+  localStorage.removeItem("conversation_id");
+  chatArea.innerHTML = "";
 };
