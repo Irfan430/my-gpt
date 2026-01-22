@@ -1,3 +1,4 @@
+/* ===== Base ===== */
 * {
   box-sizing: border-box;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -15,7 +16,7 @@ body {
   height: 100vh;
 }
 
-/* Sidebar */
+/* ===== Sidebar ===== */
 #sidebar {
   width: 260px;
   background: #161a22;
@@ -42,7 +43,6 @@ body {
   margin-bottom: 12px;
 }
 
-/* Conversation list */
 .conv {
   padding: 8px;
   border-radius: 6px;
@@ -52,11 +52,7 @@ body {
   font-size: 14px;
 }
 
-.conv:hover {
-  background: #2a3142;
-}
-
-/* Chat area */
+/* ===== Chat ===== */
 #chat {
   flex: 1;
   display: flex;
@@ -69,30 +65,64 @@ body {
   overflow-y: auto;
 }
 
-/* Messages */
+/* ===== Message bubble ===== */
 .msg {
   max-width: 85%;
-  padding: 10px 12px;
-  border-radius: 12px;
-  margin-bottom: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
+  margin-bottom: 14px;
 }
 
-.user {
+.msg.user {
   background: #5da9ff;
   color: #000;
+  padding: 10px 12px;
+  border-radius: 12px;
   margin-left: auto;
 }
 
-.bot {
+.msg.bot {
   background: #1f2430;
-  color: #eaeaea;
+  padding: 10px 12px;
+  border-radius: 12px;
   margin-right: auto;
 }
 
-/* Input */
+/* ===== Code block ===== */
+.code-block {
+  background: #0b0d12;
+  border: 1px solid #222;
+  border-radius: 8px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.code-header {
+  display: flex;
+  justify-content: space-between;
+  background: #161a22;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #aaa;
+}
+
+.copy-btn {
+  cursor: pointer;
+  color: #5da9ff;
+}
+
+.copy-btn:hover {
+  text-decoration: underline;
+}
+
+pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  font-family: monospace;
+  font-size: 13px;
+  color: #eaeaea;
+}
+
+/* ===== Input ===== */
 #inputBar {
   display: flex;
   gap: 8px;
@@ -105,7 +135,6 @@ body {
   padding: 10px;
   border-radius: 8px;
   border: none;
-  outline: none;
 }
 
 #sendBtn {
@@ -114,7 +143,6 @@ body {
   border: none;
   border-radius: 8px;
   padding: 0 16px;
-  cursor: pointer;
 }
 
 #stopBtn {
@@ -123,12 +151,8 @@ body {
   border: none;
   border-radius: 8px;
   padding: 0 16px;
-  cursor: pointer;
 }
 
-/* Mobile */
 @media (max-width: 768px) {
-  #sidebar {
-    display: none;
-  }
+  #sidebar { display: none; }
 }
