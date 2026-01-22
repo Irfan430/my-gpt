@@ -1,23 +1,21 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>WormGPT</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <link rel="stylesheet" href="/static/css/style.css">
-  <link rel="stylesheet"
-        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="static/css/style.css" />
 </head>
 <body>
 
 <div class="layout">
-
+  <!-- Sidebar -->
   <aside id="sidebar" class="sidebar hidden">
     <div class="sidebar-header">Conversations</div>
     <ul id="conversationList"></ul>
   </aside>
 
+  <!-- Main -->
   <div class="app">
     <header class="header">
       <button id="toggleSidebar">☰</button>
@@ -28,17 +26,15 @@
     <div id="chatArea" class="chat-area"></div>
 
     <div class="input-area">
-      <textarea id="userInput" placeholder="Type message… (Shift+Enter = new line)"></textarea>
+      <textarea id="userInput" placeholder="Type message…"></textarea>
       <div class="actions">
         <button id="sendBtn">Send</button>
         <button id="stopBtn" disabled>Stop</button>
       </div>
     </div>
   </div>
-
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="/static/js/app.js"></script>
+<script src="static/js/app.js"></script>
 </body>
 </html>
