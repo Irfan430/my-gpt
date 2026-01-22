@@ -1,5 +1,4 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
-
 body {
   height: 100vh;
   background: #0f172a;
@@ -18,7 +17,6 @@ body {
   overflow: hidden;
 }
 .sidebar.hidden { width: 0; }
-.sidebar.compact { width: 56px; }
 
 .sidebar-header {
   padding: 14px;
@@ -64,7 +62,6 @@ body {
   padding: 12px 14px;
   border-radius: 12px;
   white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .message.user .bubble {
@@ -81,7 +78,6 @@ body {
   margin-top: 10px;
   border: 1px solid #1e293b;
   border-radius: 8px;
-  overflow: hidden;
 }
 
 .code-header {
@@ -106,12 +102,8 @@ pre {
 }
 
 /* Continue */
-.continue-box {
+.continue-btn {
   margin-top: 10px;
-  text-align: right;
-}
-
-.continue-box button {
   background: #2563eb;
   color: white;
   border: none;
@@ -129,7 +121,7 @@ pre {
 
 textarea {
   width: 100%;
-  height: 80px;
+  height: 70px;
   background: #020617;
   color: white;
   border: 1px solid #1e293b;
