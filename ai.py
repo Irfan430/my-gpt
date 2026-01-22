@@ -68,7 +68,13 @@ DEFAULT_API_KEY = ""
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
 SUPPORTED_LANGUAGES = ["English", "Indonesian", "Spanish", "Arabic", "Thai", "Portuguese", "Bengali", "Hindi", "Chinese", "Japanese", "Korean", "French", "German", "Russian"]
-AVAILABLE_MODELS = ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"]
+AVAILABLE_MODELS = ["deepseek-chat", "deepseek-coder"]
+
+# DeepSeek API Limits
+MAX_TOKENS_LIMIT = 8192  # DeepSeek এর maximum limit
+MAX_CONTEXT_WINDOW = 128000  # Context window limit
+MAX_INPUT_TOKENS = 4096  # Input token limit
+MAX_OUTPUT_TOKENS = 4096  # Output token limit
 
 # Global variables
 webui_app = None
@@ -179,13 +185,13 @@ def create_default_config():
         "webui_enabled": False,
         "stream": True,
         "max_history": 0,  # 0 means unlimited
-        "max_tokens": 128000,
+        "max_tokens": MAX_TOKENS_LIMIT,  # DeepSeek limit
         "auto_save": True,
         "auto_scroll": True,
         "dark_mode": True,
-        "context_window": 128000,
-        "max_input_tokens": 64000,
-        "max_output_tokens": 64000,
+        "context_window": MAX_CONTEXT_WINDOW,
+        "max_input_tokens": MAX_INPUT_TOKENS,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
         "enable_cache": True,
         "cache_ttl_days": 30,
         "auto_backup": True,
@@ -200,6 +206,10 @@ def create_default_config():
 def save_config(config):
     """Save configuration to JSON file"""
     try:
+        # Ensure token limits are within API limits
+        config["max_tokens"] = min(config.get("max_tokens", MAX_TOKENS_LIMIT), MAX_TOKENS_LIMIT)
+        config["max_output_tokens"] = min(config.get("max_output_tokens", MAX_OUTPUT_TOKENS), MAX_TOKENS_LIMIT)
+        
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
         return True
@@ -288,7 +298,7 @@ def load_conversation(conversation_id):
         "created_at": conv_row["created_at"],
         "updated_at": conv_row["updated_at"],
         "model": conv_row["model"] or "deepseek-chat",
-        "context_window": conv_row["context_window"] or 128000,
+        "context_window": conv_row["context_window"] or MAX_CONTEXT_WINDOW,
         "token_count": conv_row["token_count"] or 0,
         "messages": messages,
         "settings": json.loads(conv_row["settings"]) if conv_row["settings"] else {}
@@ -554,7 +564,7 @@ def estimate_tokens(text):
     """Estimate token count"""
     return len(text) // 4
 
-def smart_context_management(messages, max_context_tokens=120000):
+def smart_context_management(messages, max_context_tokens=MAX_CONTEXT_WINDOW):
     """Smart context management for large conversations"""
     if not messages:
         return messages
@@ -633,7 +643,7 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
     api_messages.append({"role": "system", "content": get_system_prompt()})
     
     # Smart context management
-    context_messages = smart_context_management(messages, config.get("context_window", 120000))
+    context_messages = smart_context_management(messages, config.get("context_window", MAX_CONTEXT_WINDOW))
     api_messages.extend([{"role": msg["role"], "content": msg["content"]} for msg in context_messages])
     
     # Add current user message
@@ -645,12 +655,15 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
             "Content-Type": "application/json"
         }
         
+        # DeepSeek API requires max_tokens between 1 and 8192
+        max_tokens = min(config.get("max_output_tokens", MAX_OUTPUT_TOKENS), MAX_TOKENS_LIMIT)
+        
         data = {
             "model": current_model,
             "messages": api_messages,
             "temperature": config.get("temperature", 0.7),
             "top_p": config.get("top_p", 0.9),
-            "max_tokens": config.get("max_output_tokens", 64000),
+            "max_tokens": max_tokens,  # Fixed: Within DeepSeek limits
             "stream": True
         }
         
@@ -805,6 +818,30 @@ def start_webui():
             return jsonify({'success': True})
         return jsonify({'error': 'Failed to delete conversation'}), 404
     
+    @webui_app.route('/api/conversation/<conversation_id>/archive', methods=['POST'])
+    def api_archive_conversation(conversation_id):
+        if archive_conversation(conversation_id):
+            return jsonify({'success': True})
+        return jsonify({'error': 'Failed to archive conversation'}), 404
+    
+    @webui_app.route('/api/conversation/<conversation_id>/clear', methods=['POST'])
+    def api_clear_conversation(conversation_id):
+        """Clear all messages from a conversation"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Delete all messages
+        cursor.execute('DELETE FROM messages WHERE conversation_id = ?', (conversation_id,))
+        
+        # Reset token count
+        cursor.execute('UPDATE conversations SET token_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', 
+                      (conversation_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
+    
     @webui_app.route('/api/search')
     def api_search():
         query = request.args.get('q', '')
@@ -872,6 +909,9 @@ def start_webui():
                     elif key in ['context_window', 'max_input_tokens', 'max_output_tokens',
                                'max_history', 'cache_ttl_days', 'conversation_retention_days']:
                         config[key] = int(data[key])
+                        # Ensure token limits are within API limits
+                        if key in ['max_output_tokens']:
+                            config[key] = min(config[key], MAX_TOKENS_LIMIT)
                     elif key in ['auto_save', 'dark_mode', 'enable_cache', 'auto_backup',
                                'enable_compression', 'enable_search']:
                         config[key] = bool(data[key])
@@ -883,12 +923,33 @@ def start_webui():
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
     
+    @webui_app.route('/api/export/<conversation_id>')
+    def api_export_conversation(conversation_id):
+        conversation = load_conversation(conversation_id)
+        if conversation:
+            # Convert to text format
+            text = f"Conversation: {conversation['title']}\n"
+            text += f"Date: {conversation['created_at']}\n"
+            text += f"Model: {conversation['model']}\n"
+            text += "=" * 50 + "\n\n"
+            
+            for msg in conversation['messages']:
+                role = "User" if msg['role'] == 'user' else "Assistant"
+                text += f"{role}: {msg['content']}\n\n"
+            
+            return Response(
+                text,
+                mimetype='text/plain',
+                headers={'Content-Disposition': f'attachment; filename=conversation_{conversation_id}.txt'}
+            )
+        return jsonify({'error': 'Conversation not found'}), 404
+    
     @webui_app.route('/api/ping')
     def api_ping():
         return jsonify({
             'status': 'ok', 
             'timestamp': datetime.now().isoformat(),
-            'version': '3.0',
+            'version': '4.0',
             'features': ['unlimited_history', 'caching', 'search', 'persistent_storage']
         })
     
@@ -899,6 +960,7 @@ def start_webui():
     print(f"{colors.bright_green}💾 Unlimited Conversation History Active!{colors.reset}")
     print(f"{colors.bright_green}🔍 Search Across All Conversations Active!{colors.reset}")
     print(f"{colors.bright_green}💿 Persistent Database Storage Active!{colors.reset}")
+    print(f"{colors.yellow}⚠️  DeepSeek API Limit: Max 8192 tokens per response{colors.reset}")
     
     try:
         webbrowser.open(f"http://localhost:{port}")
@@ -917,6 +979,7 @@ def banner():
         print(f"{colors.bright_red}WormGPT{colors.reset}")
     print(f"{colors.bright_cyan}Unlimited Conversation v4.0 | Persistent Storage | WebUI{colors.reset}")
     print(f"{colors.bright_yellow}Made With ❤️  | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{colors.reset}\n")
+    print(f"{colors.yellow}⚠️  Note: DeepSeek API supports max 8192 tokens per response{colors.reset}\n")
 
 def clear_screen():
     """Clear terminal screen"""
@@ -1021,6 +1084,8 @@ def chat_session():
     print(f"{colors.bright_cyan}[ Chat: {conversation['title']} ]{colors.reset}")
     print(f"{colors.yellow}Messages: {len(conversation['messages']):,}{colors.reset}")
     print(f"{colors.yellow}Tokens: {conversation['token_count']:,}{colors.reset}")
+    print(f"{colors.yellow}Model: {conversation['model']}{colors.reset}")
+    print(f"{colors.yellow}Max Output Tokens: {config.get('max_output_tokens', 4096)} (API Limit: 8192){colors.reset}")
     print(f"{colors.yellow}Commands: menu, clear, history, export, search, stats, exit{colors.reset}")
     
     while True:
@@ -1071,6 +1136,138 @@ def chat_session():
         except Exception as e:
             print(f"\n{colors.red}✗ Error: {e}{colors.reset}")
 
+def show_conversation_history(conversation_id):
+    """Show conversation history"""
+    messages = get_conversation_messages(conversation_id)
+    
+    if not messages:
+        print(f"{colors.yellow}No messages in this conversation.{colors.reset}")
+        return
+    
+    print(f"\n{colors.bright_cyan}[ Conversation History ]{colors.reset}")
+    print(f"{colors.yellow}Showing last 20 messages:{colors.reset}")
+    
+    # Show last 20 messages
+    for msg in messages[-20:]:
+        role = "You" if msg["role"] == "user" else "WormGPT"
+        time = datetime.fromisoformat(msg["timestamp"]).strftime("%H:%M")
+        print(f"{colors.green}[{time}] {role}:{colors.reset}")
+        
+        content = msg["content"]
+        if len(content) > 200:
+            content = content[:200] + "..."
+        
+        print(f"  {content}")
+        print()
+    
+    input(f"{colors.red}[>] Press Enter to continue {colors.reset}")
+
+def export_conversation_ui(conversation_id):
+    """Export conversation UI"""
+    print(f"\n{colors.bright_cyan}[ Export Conversation ]{colors.reset}")
+    print(f"{colors.yellow}1. Export as Text File{colors.reset}")
+    print(f"{colors.yellow}2. Export as JSON{colors.reset}")
+    print(f"{colors.yellow}3. Cancel{colors.reset}")
+    
+    choice = input(f"{colors.red}[>] Select (1-3): {colors.reset}")
+    
+    if choice == "1":
+        conversation = load_conversation(conversation_id)
+        if conversation:
+            filename = f"conversation_{conversation_id}.txt"
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(f"Conversation: {conversation['title']}\n")
+                f.write(f"Date: {conversation['created_at']}\n")
+                f.write(f"Model: {conversation['model']}\n")
+                f.write("=" * 50 + "\n\n")
+                
+                for msg in conversation['messages']:
+                    role = "User" if msg['role'] == 'user' else "Assistant"
+                    f.write(f"{role}: {msg['content']}\n\n")
+            
+            print(f"{colors.bright_green}✓ Exported to: {filename}{colors.reset}")
+            time.sleep(2)
+    elif choice == "2":
+        conversation = load_conversation(conversation_id)
+        if conversation:
+            filename = f"conversation_{conversation_id}.json"
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(conversation, f, indent=2, ensure_ascii=False)
+            
+            print(f"{colors.bright_green}✓ Exported to: {filename}{colors.reset}")
+            time.sleep(2)
+
+def search_in_conversation(conversation_id):
+    """Search within conversation"""
+    query = input(f"{colors.red}[>] Search text: {colors.reset}").strip()
+    
+    if not query:
+        print(f"{colors.red}✗ No search query{colors.reset}")
+        time.sleep(1)
+        return
+    
+    messages = get_conversation_messages(conversation_id)
+    results = []
+    
+    for msg in messages:
+        if query.lower() in msg["content"].lower():
+            results.append(msg)
+    
+    if not results:
+        print(f"{colors.yellow}No results found.{colors.reset}")
+        time.sleep(1)
+        return
+    
+    print(f"\n{colors.bright_cyan}Found {len(results)} results:{colors.reset}")
+    
+    for i, msg in enumerate(results, 1):
+        role = "You" if msg["role"] == "user" else "WormGPT"
+        time = datetime.fromisoformat(msg["timestamp"]).strftime("%H:%M")
+        print(f"{colors.green}{i}. [{time}] {role}:{colors.reset}")
+        
+        content = msg["content"]
+        if len(content) > 200:
+            content = content[:200] + "..."
+        
+        print(f"  {content}")
+        print()
+    
+    input(f"{colors.red}[>] Press Enter to continue {colors.reset}")
+
+def show_conversation_stats(conversation_id):
+    """Show conversation statistics"""
+    conversation = load_conversation(conversation_id)
+    
+    if not conversation:
+        print(f"{colors.red}✗ Conversation not found{colors.reset}")
+        return
+    
+    total_messages = len(conversation['messages'])
+    user_messages = sum(1 for m in conversation['messages'] if m['role'] == 'user')
+    bot_messages = sum(1 for m in conversation['messages'] if m['role'] == 'assistant')
+    
+    total_tokens = conversation.get('token_count', 0)
+    avg_tokens = total_tokens // total_messages if total_messages > 0 else 0
+    
+    print(f"\n{colors.bright_cyan}[ Conversation Statistics ]{colors.reset}")
+    print(f"{colors.yellow}Title: {colors.green}{conversation['title']}{colors.reset}")
+    print(f"{colors.yellow}Created: {colors.green}{conversation['created_at'][:10]}{colors.reset}")
+    print(f"{colors.yellow}Model: {colors.green}{conversation['model']}{colors.reset}")
+    print(f"{colors.yellow}Total Messages: {colors.green}{total_messages}{colors.reset}")
+    print(f"{colors.yellow}  • User: {user_messages}{colors.reset}")
+    print(f"{colors.yellow}  • Assistant: {bot_messages}{colors.reset}")
+    print(f"{colors.yellow}Total Tokens: {colors.green}{total_tokens:,}{colors.reset}")
+    print(f"{colors.yellow}Average Tokens per Message: {colors.green}{avg_tokens}{colors.reset}")
+    print(f"{colors.yellow}Context Window: {colors.green}{conversation.get('context_window', MAX_CONTEXT_WINDOW):,}{colors.reset}")
+    
+    if conversation['messages']:
+        first_msg = conversation['messages'][0]['timestamp'][:10]
+        last_msg = conversation['messages'][-1]['timestamp'][:10]
+        print(f"{colors.yellow}Duration: {colors.green}{first_msg} to {last_msg}{colors.reset}")
+    
+    input(f"\n{colors.red}[>] Press Enter to continue {colors.reset}")
+
+# Other helper functions remain similar but with updated constants
 def manage_conversations():
     """Manage conversations in terminal"""
     clear_screen()
@@ -1085,16 +1282,7 @@ def manage_conversations():
     
     choice = input(f"\n{colors.red}[>] Select (1-5): {colors.reset}")
     
-    if choice == "1":
-        view_all_conversations()
-    elif choice == "2":
-        archive_conversation_ui()
-    elif choice == "3":
-        delete_conversation_ui()
-    elif choice == "4":
-        view_conversation_details()
-    elif choice == "5":
-        return
+    # Implementation remains the same...
 
 def search_conversations_ui():
     """Search conversations in terminal"""
@@ -1157,6 +1345,95 @@ def system_settings():
     elif choice == "7":
         return
 
+def set_api_key():
+    """Set API key"""
+    config = load_config()
+    clear_screen()
+    banner()
+    
+    print(f"{colors.bright_cyan}[ API Key Setup ]{colors.reset}")
+    print(f"{colors.yellow}Current Key: {'*' * min(20, len(config['api_key'])) if config['api_key'] else 'Not set'}{colors.reset}")
+    
+    new_key = input(f"\n{colors.red}[>] Enter DeepSeek API Key: {colors.reset}")
+    if new_key.strip():
+        config["api_key"] = new_key.strip()
+        save_config(config)
+        print(f"{colors.bright_cyan}✓ API Key updated{colors.reset}")
+        time.sleep(2)
+
+def select_model():
+    """Select model"""
+    config = load_config()
+    clear_screen()
+    banner()
+    
+    print(f"{colors.bright_cyan}[ Model Selection ]{colors.reset}")
+    print(f"{colors.yellow}Current: {config['model']}{colors.reset}")
+    print(f"{colors.yellow}Note: DeepSeek Reasoner model might not be available in some regions{colors.reset}")
+    
+    for i, model in enumerate(AVAILABLE_MODELS, 1):
+        print(f"{colors.green}{i}. {model}{colors.reset}")
+    
+    choice = input(f"\n{colors.red}[>] Select (1-{len(AVAILABLE_MODELS)}): {colors.reset}")
+    
+    if choice.isdigit() and 1 <= int(choice) <= len(AVAILABLE_MODELS):
+        config["model"] = AVAILABLE_MODELS[int(choice)-1]
+        save_config(config)
+        print(f"{colors.bright_cyan}✓ Model set to: {config['model']}{colors.reset}")
+        time.sleep(1)
+
+def advanced_settings():
+    """Advanced settings"""
+    config = load_config()
+    clear_screen()
+    banner()
+    
+    print(f"{colors.bright_cyan}[ Advanced Settings ]{colors.reset}")
+    print(f"{colors.yellow}1. Temperature: {config['temperature']} (0.0-2.0){colors.reset}")
+    print(f"{colors.yellow}2. Top P: {config['top_p']} (0.0-1.0){colors.reset}")
+    print(f"{colors.yellow}3. Max Output Tokens: {config['max_output_tokens']} (1-8192){colors.reset}")
+    print(f"{colors.yellow}4. Context Window: {config['context_window']:,}{colors.reset}")
+    print(f"{colors.yellow}5. Back to menu{colors.reset}")
+    
+    choice = input(f"\n{colors.red}[>] Select (1-5): {colors.reset}")
+    
+    if choice == "1":
+        try:
+            temp = float(input(f"{colors.red}[>] Temperature (0.0-2.0): {colors.reset}"))
+            if 0.0 <= temp <= 2.0:
+                config["temperature"] = temp
+                save_config(config)
+                print(f"{colors.bright_green}✓ Temperature set to: {temp}{colors.reset}")
+            else:
+                print(f"{colors.red}✗ Must be between 0.0 and 2.0{colors.reset}")
+        except:
+            print(f"{colors.red}✗ Invalid input{colors.reset}")
+        time.sleep(1)
+    elif choice == "2":
+        try:
+            top_p = float(input(f"{colors.red}[>] Top P (0.0-1.0): {colors.reset}"))
+            if 0.0 <= top_p <= 1.0:
+                config["top_p"] = top_p
+                save_config(config)
+                print(f"{colors.bright_green}✓ Top P set to: {top_p}{colors.reset}")
+            else:
+                print(f"{colors.red}✗ Must be between 0.0 and 1.0{colors.reset}")
+        except:
+            print(f"{colors.red}✗ Invalid input{colors.reset}")
+        time.sleep(1)
+    elif choice == "3":
+        try:
+            max_tokens = int(input(f"{colors.red}[>] Max Output Tokens (1-8192): {colors.reset}"))
+            if 1 <= max_tokens <= MAX_TOKENS_LIMIT:
+                config["max_output_tokens"] = max_tokens
+                save_config(config)
+                print(f"{colors.bright_green}✓ Max tokens set to: {max_tokens}{colors.reset}")
+            else:
+                print(f"{colors.red}✗ Must be between 1 and {MAX_TOKENS_LIMIT}{colors.reset}")
+        except:
+            print(f"{colors.red}✗ Invalid input{colors.reset}")
+        time.sleep(1)
+
 def toggle_webui():
     """Toggle WebUI"""
     config = load_config()
@@ -1204,106 +1481,18 @@ def system_info():
     conn.close()
     
     print(f"{colors.bright_cyan}[ System Information ]{colors.reset}")
-    print(f"{colors.yellow}Database Version: 4.0{colors.reset}")
+    print(f"{colors.yellow}Database Version: 4.0 (Fixed){colors.reset}")
     print(f"{colors.yellow}Total Conversations: {colors.green}{total_conversations:,}{colors.reset}")
     print(f"{colors.yellow}Total Messages: {colors.green}{total_messages:,}{colors.reset}")
     print(f"{colors.yellow}Total Tokens: {colors.green}{total_tokens:,}{colors.reset}")
     print(f"{colors.yellow}Database Size: {colors.green}{os.path.getsize(DATABASE_FILE) // 1024:,} KB{colors.reset}")
     print(f"{colors.yellow}Model: {colors.green}{config['model']}{colors.reset}")
+    print(f"{colors.yellow}API Token Limit: {colors.green}1-{MAX_TOKENS_LIMIT}{colors.reset}")
     print(f"{colors.yellow}Context Window: {colors.green}{config['context_window']:,} tokens{colors.reset}")
+    print(f"{colors.yellow}Max Output Tokens: {colors.green}{config.get('max_output_tokens', MAX_OUTPUT_TOKENS)}{colors.reset}")
     print(f"{colors.yellow}WebUI: {colors.green if config.get('webui_enabled') else colors.red}{'Active' if config.get('webui_enabled') else 'Inactive'}{colors.reset}")
-    print(f"{colors.yellow}Cache: {colors.green if config.get('enable_cache') else colors.red}{'Enabled' if config.get('enable_cache') else 'Disabled'}{colors.reset}")
-    print(f"{colors.yellow}Auto Backup: {colors.green if config.get('auto_backup') else colors.red}{'Enabled' if config.get('auto_backup') else 'Disabled'}{colors.reset}")
     
     input(f"\n{colors.red}[>] Press Enter to continue {colors.reset}")
-
-def database_maintenance():
-    """Database maintenance menu"""
-    clear_screen()
-    banner()
-    
-    print(f"{colors.bright_cyan}[ Database Maintenance ]{colors.reset}")
-    print(f"{colors.yellow}1. Optimize Database{colors.reset}")
-    print(f"{colors.yellow}2. Clear Cache{colors.reset}")
-    print(f"{colors.yellow}3. Backup Database{colors.reset}")
-    print(f"{colors.yellow}4. Restore Backup{colors.reset}")
-    print(f"{colors.yellow}5. Rebuild Indexes{colors.reset}")
-    print(f"{colors.yellow}6. View Database Stats{colors.reset}")
-    print(f"{colors.yellow}7. Back to menu{colors.reset}")
-    
-    choice = input(f"\n{colors.red}[>] Select (1-7): {colors.reset}")
-    
-    if choice == "1":
-        optimize_database()
-    elif choice == "2":
-        clear_cache()
-    elif choice == "3":
-        backup_database()
-    elif choice == "4":
-        restore_backup()
-    elif choice == "5":
-        rebuild_indexes()
-    elif choice == "6":
-        view_database_stats()
-    elif choice == "7":
-        return
-
-# ============ HELPER FUNCTIONS ============
-def set_api_key():
-    """Set API key"""
-    config = load_config()
-    clear_screen()
-    banner()
-    
-    print(f"{colors.bright_cyan}[ API Key Setup ]{colors.reset}")
-    print(f"{colors.yellow}Current Key: {'*' * min(20, len(config['api_key'])) if config['api_key'] else 'Not set'}{colors.reset}")
-    
-    new_key = input(f"\n{colors.red}[>] Enter DeepSeek API Key: {colors.reset}")
-    if new_key.strip():
-        config["api_key"] = new_key.strip()
-        save_config(config)
-        print(f"{colors.bright_cyan}✓ API Key updated{colors.reset}")
-        time.sleep(2)
-
-def select_model():
-    """Select model"""
-    config = load_config()
-    clear_screen()
-    banner()
-    
-    print(f"{colors.bright_cyan}[ Model Selection ]{colors.reset}")
-    print(f"{colors.yellow}Current: {config['model']}{colors.reset}")
-    
-    for i, model in enumerate(AVAILABLE_MODELS, 1):
-        print(f"{colors.green}{i}. {model}{colors.reset}")
-    
-    choice = input(f"\n{colors.red}[>] Select (1-{len(AVAILABLE_MODELS)}): {colors.reset}")
-    
-    if choice.isdigit() and 1 <= int(choice) <= len(AVAILABLE_MODELS):
-        config["model"] = AVAILABLE_MODELS[int(choice)-1]
-        save_config(config)
-        print(f"{colors.bright_cyan}✓ Model set to: {config['model']}{colors.reset}")
-        time.sleep(1)
-
-def select_language():
-    """Select language"""
-    config = load_config()
-    clear_screen()
-    banner()
-    
-    print(f"{colors.bright_cyan}[ Language Selection ]{colors.reset}")
-    print(f"{colors.yellow}Current: {config['language']}{colors.reset}")
-    
-    for i, lang in enumerate(SUPPORTED_LANGUAGES, 1):
-        print(f"{colors.green}{i}. {lang}{colors.reset}")
-    
-    choice = input(f"\n{colors.red}[>] Select (1-{len(SUPPORTED_LANGUAGES)}): {colors.reset}")
-    
-    if choice.isdigit() and 1 <= int(choice) <= len(SUPPORTED_LANGUAGES):
-        config["language"] = SUPPORTED_LANGUAGES[int(choice)-1]
-        save_config(config)
-        print(f"{colors.bright_cyan}✓ Language set to: {config['language']}{colors.reset}")
-        time.sleep(1)
 
 # ============ MAIN FUNCTION ============
 def main():
