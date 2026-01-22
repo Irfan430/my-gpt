@@ -1,19 +1,24 @@
+const chatArea = document.getElementById("chatArea");
+const userInput = document.getElementById("userInput");
+const sendBtn = document.getElementById("sendBtn");
+const stopBtn = document.getElementById("stopBtn");
+const toggleSidebar = document.getElementById("toggleSidebar");
+const sidebar = document.getElementById("sidebar");
+const newChatBtn = document.getElementById("newChatBtn");
+
 let eventSource = null;
 let conversationId = localStorage.getItem("conversation_id") || "";
-
-let currentMode = "text";   // text | code
-let currentCodeLang = "";
-let currentTextDiv = null;
-let currentCodePre = null;
+let sidebarState = 0;
 
 /* ---------- helpers ---------- */
 
-function addAssistantContainer() {
+function addMessage(role, html) {
   const msg = document.createElement("div");
-  msg.className = "message assistant";
+  msg.className = "message " + role;
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
+  bubble.innerHTML = html;
 
   msg.appendChild(bubble);
   chatArea.appendChild(msg);
@@ -22,116 +27,80 @@ function addAssistantContainer() {
   return bubble;
 }
 
-function startTextBlock(parent) {
-  const div = document.createElement("div");
-  parent.appendChild(div);
-  return div;
+function parseMessage(text) {
+  const parts = text.split(/```/);
+  let out = "";
+
+  parts.forEach((p, i) => {
+    if (i % 2 === 0) {
+      out += `<div>${escapeHtml(p)}</div>`;
+    } else {
+      const lines = p.split("\n");
+      const lang = lines.shift() || "text";
+      const code = lines.join("\n");
+
+      out += `
+        <div class="code-block">
+          <div class="code-header">
+            <span>${lang}</span>
+            <button onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre><code class="language-${lang}">${escapeHtml(code)}</code></pre>
+        </div>`;
+    }
+  });
+
+  return out;
 }
 
-function startCodeBlock(parent, lang) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "code-block";
-
-  const header = document.createElement("div");
-  header.className = "code-header";
-  header.innerHTML = `<span>${lang || "code"}</span>`;
-
-  const btn = document.createElement("button");
-  btn.textContent = "Copy";
-  btn.onclick = () => {
-    navigator.clipboard.writeText(code.innerText);
-    btn.textContent = "✓";
-    setTimeout(() => (btn.textContent = "Copy"), 1000);
-  };
-
-  header.appendChild(btn);
-
-  const pre = document.createElement("pre");
-  const code = document.createElement("code");
-  if (lang) code.className = `language-${lang}`;
-
-  pre.appendChild(code);
-  wrapper.appendChild(header);
-  wrapper.appendChild(pre);
-  parent.appendChild(wrapper);
-
-  return code;
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, m =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m])
+  );
 }
 
-/* ---------- STREAM SEND ---------- */
+window.copyCode = (btn) => {
+  navigator.clipboard.writeText(
+    btn.parentElement.nextElementSibling.innerText
+  );
+  btn.innerText = "✓";
+  setTimeout(() => btn.innerText = "Copy", 1000);
+};
+
+/* ---------- send ---------- */
 
 sendBtn.onclick = () => {
   const text = userInput.value.trim();
   if (!text || eventSource) return;
 
   userInput.value = "";
-  addMessage("user", text);
+  addMessage("user", escapeHtml(text));
 
   stopBtn.disabled = false;
 
-  const bubble = addAssistantContainer();
-  currentTextDiv = startTextBlock(bubble);
-
-  currentMode = "text";
-  currentCodeLang = "";
-  currentCodePre = null;
+  const assistantBubble = addMessage("assistant", "");
+  let full = "";
 
   eventSource = new EventSource(
     `/api/chat/stream?message=${encodeURIComponent(text)}&conversation_id=${conversationId}`
   );
-
-  let buffer = "";
 
   eventSource.onmessage = (e) => {
     if (e.data === "[DONE]") {
       eventSource.close();
       eventSource = null;
       stopBtn.disabled = true;
+
+      assistantBubble.innerHTML = parseMessage(full);
       hljs.highlightAll();
       return;
     }
 
     const data = JSON.parse(e.data);
-    if (!data.content) return;
-
-    buffer += data.content;
-
-    while (true) {
-      const fenceIndex = buffer.indexOf("```");
-      if (fenceIndex === -1) break;
-
-      const before = buffer.slice(0, fenceIndex);
-      const after = buffer.slice(fenceIndex + 3);
-
-      if (currentMode === "text") {
-        currentTextDiv.textContent += before;
-
-        const firstLineEnd = after.indexOf("\n");
-        currentCodeLang =
-          firstLineEnd !== -1 ? after.slice(0, firstLineEnd).trim() : "";
-
-        currentCodePre = startCodeBlock(bubble, currentCodeLang);
-        currentMode = "code";
-
-        buffer = firstLineEnd !== -1 ? after.slice(firstLineEnd + 1) : "";
-      } else {
-        currentCodePre.textContent += before;
-        currentTextDiv = startTextBlock(bubble);
-        currentMode = "text";
-        buffer = after;
-      }
+    if (data.content) {
+      full += data.content;
+      assistantBubble.textContent = full; // live typing (plain)
     }
-
-    if (buffer.length) {
-      if (currentMode === "text") {
-        currentTextDiv.textContent += buffer;
-      } else {
-        currentCodePre.textContent += buffer;
-      }
-      buffer = "";
-    }
-
-    chatArea.scrollTop = chatArea.scrollHeight;
   };
 };
 
@@ -141,4 +110,20 @@ stopBtn.onclick = () => {
     eventSource = null;
     stopBtn.disabled = true;
   }
+};
+
+/* ---------- sidebar ---------- */
+
+toggleSidebar.onclick = () => {
+  sidebarState = (sidebarState + 1) % 3;
+  sidebar.classList.remove("hidden", "compact");
+
+  if (sidebarState === 0) sidebar.classList.add("hidden");
+  if (sidebarState === 1) sidebar.classList.add("compact");
+};
+
+newChatBtn.onclick = () => {
+  conversationId = "";
+  localStorage.removeItem("conversation_id");
+  chatArea.innerHTML = "";
 };
