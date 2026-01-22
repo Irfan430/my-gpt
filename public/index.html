@@ -1,34 +1,45 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>WormGPT Web UI</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <title>WormGPT</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- CSS -->
-  <link rel="stylesheet" href="/static/css/style.css" />
-
-  <!-- Highlight.js -->
+  <link rel="stylesheet" href="/static/css/style.css">
   <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 </head>
 <body>
 
-<div class="app">
-  <header class="header">
-    <h1>WormGPT</h1>
-    <button id="newChatBtn">New Chat</button>
-  </header>
+<div class="layout">
 
-  <div id="chatArea" class="chat-area"></div>
+  <!-- Sidebar -->
+  <aside id="sidebar" class="sidebar hidden">
+    <div class="sidebar-header">
+      <span>Conversations</span>
+    </div>
+    <ul id="conversationList"></ul>
+  </aside>
 
-  <div class="input-area">
-    <textarea id="userInput" placeholder="Type your message..."></textarea>
-    <div class="actions">
-      <button id="sendBtn">Send</button>
-      <button id="stopBtn" disabled>Stop</button>
+  <!-- Main -->
+  <div class="app">
+    <header class="header">
+      <button id="toggleSidebar">☰</button>
+      <h1>WormGPT</h1>
+      <button id="newChatBtn">New</button>
+    </header>
+
+    <div id="chatArea" class="chat-area"></div>
+
+    <div class="input-area">
+      <textarea id="userInput" placeholder="Type message… (Shift+Enter = new line)"></textarea>
+      <div class="actions">
+        <button id="sendBtn">Send</button>
+        <button id="stopBtn" disabled>Stop</button>
+      </div>
     </div>
   </div>
+
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
