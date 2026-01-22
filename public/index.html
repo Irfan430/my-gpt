@@ -1,33 +1,37 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>WormGPT</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="/static/css/style.css">
+  <meta charset="UTF-8" />
+  <title>WormGPT Web UI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="/static/css/style.css" />
+
+  <!-- Highlight.js -->
+  <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 </head>
 <body>
 
-<div id="app">
-  <!-- Sidebar -->
-  <aside id="sidebar">
-    <div class="brand">WormGPT</div>
-    <button id="newChat">＋ New Chat</button>
-    <div id="conversationList"></div>
-  </aside>
+<div class="app">
+  <header class="header">
+    <h1>WormGPT</h1>
+    <button id="newChatBtn">New Chat</button>
+  </header>
 
-  <!-- Chat -->
-  <main id="chat">
-    <div id="messages"></div>
+  <div id="chatArea" class="chat-area"></div>
 
-    <div id="inputBar">
-      <input id="userInput" placeholder="Type your message…" autocomplete="off">
+  <div class="input-area">
+    <textarea id="userInput" placeholder="Type your message..."></textarea>
+    <div class="actions">
       <button id="sendBtn">Send</button>
       <button id="stopBtn" disabled>Stop</button>
     </div>
-  </main>
+  </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>
