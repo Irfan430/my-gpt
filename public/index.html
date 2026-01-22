@@ -1,42 +1,143 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WormGPT</title>
-<link rel="stylesheet" href="/static/css/style.css">
-</head>
-<body>
+import sys
+import os
+import platform
+import time
+import json
+import requests
+import threading
+from datetime import datetime
+from flask import Flask, request, jsonify, Response, send_from_directory, send_file
+import webbrowser
 
-<div id="app">
+try:
+    import pyfiglet
+except ImportError:
+    os.system('pip install pyfiglet --quiet')
+    import pyfiglet
 
-  <!-- SIDEBAR -->
-  <aside id="sidebar">
-    <div class="side-header">
-      <h2>🧠 WormGPT</h2>
-      <button id="newChat">＋ New Chat</button>
-    </div>
-    <ul id="conversationList"></ul>
-  </aside>
+try:
+    from langdetect import detect
+except ImportError:
+    os.system('pip install langdetect --quiet')
+    from langdetect import detect
 
-  <!-- CHAT -->
-  <main id="chat">
+try:
+    from flask import Flask
+except ImportError:
+    os.system('pip install flask --quiet')
+    from flask import Flask
 
-    <div id="topbar">
-      <span id="status">Ready</span>
-      <button id="stopBtn" class="hidden">⏹ Stop</button>
-    </div>
+try:
+    from flask_cors import CORS
+except ImportError:
+    os.system('pip install flask-cors --quiet')
+    from flask_cors import CORS
 
-    <div id="messages"></div>
+class colors:
+    black = "\033[0;30m"
+    red = "\033[0;31m"
+    green = "\033[0;32m"
+    yellow = "\033[0;33m"
+    blue = "\033[0;34m"
+    purple = "\033[0;35m"
+    cyan = "\033[0;36m"
+    white = "\033[0;37m"
+    bright_black = "\033[1;30m"
+    bright_red = "\033[1;31m"
+    bright_green = "\033[1;32m"
+    bright_yellow = "\033[1;33m"
+    bright_blue = "\033[1;34m"
+    bright_purple = "\033[1;35m"
+    bright_cyan = "\033[1;36m"
+    bright_white = "\033[1;37m"
+    reset = "\033[0m"
+    bold = "\033[1m"
 
-    <div id="inputBar">
-      <textarea id="input" placeholder="Type your message…"></textarea>
-      <button id="send">Send</button>
-    </div>
+CONFIG_FILE = "wormgpt_config.json"
+PROMPT_FILE = "system-prompt.txt"
+CONVERSATIONS_DIR = "conversations"
+DEFAULT_API_KEY = ""
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+DEFAULT_MODEL = "deepseek-chat"
+SUPPORTED_LANGUAGES = ["English", "Indonesian", "Spanish", "Arabic", "Thai", "Portuguese", "Bengali", "Hindi", "Chinese", "Japanese", "Korean", "French", "German", "Russian"]
+AVAILABLE_MODELS = ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"]
 
-  </main>
-</div>
+webui_app = None
+webui_thread = None
+webui_running = False
 
-<script src="/static/js/app.js"></script>
-</body>
-</html>
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                if "max_history" not in config:
+                    config["max_history"] = 10000
+                if "max_tokens" not in config:
+                    config["max_tokens"] = 128000
+                return config
+        except:
+            return create_default_config()
+    else:
+        return create_default_config()
+
+def create_default_config():
+    return {
+        "api_key": DEFAULT_API_KEY,
+        "base_url": DEFAULT_BASE_URL,
+        "model": DEFAULT_MODEL,
+        "language": "English",
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "webui_port": 5000,
+        "webui_enabled": False,
+        "stream": True,
+        "max_history": 10000,
+        "max_tokens": 128000,
+        "auto_save": True,
+        "auto_scroll": True,
+        "dark_mode": True,
+        "context_window": 128000,
+        "max_input_tokens": 64000,
+        "max_output_tokens": 64000
+    }
+
+def save_config(config):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+if not os.path.exists(CONVERSATIONS_DIR):
+    os.makedirs(CONVERSATIONS_DIR)
+
+def get_conversation_file(conversation_id):
+    return os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
+
+def create_new_conversation():
+    conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    conversation_file = get_conversation_file(conversation_id)
+    
+    conversation_data = {
+        "id": conversation_id,
+        "created_at": datetime.now().isoformat(),
+        "title": "New Conversation",
+        "messages": [],
+        "model": load_config()["model"],
+        "updated_at": datetime.now().isoformat(),
+        "token_count": 0,
+        "context_window": 128000
+    }
+    
+    with open(conversation_file, "w", encoding="utf-8") as f:
+        json.dump(conversation_data, f, indent=2, ensure_ascii=False)
+    
+    return conversation_id
+
+def load_conversation(conversation_id):
+    conversation_file = get_conversation_file(conversation_id)
+    if os.path.exists(conversation_file):
+        with open(conversation_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+def save_conversation_message(conversation_id, role, content, tokens=0):
+    conversation = load_conversation(con
