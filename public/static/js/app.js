@@ -1,24 +1,24 @@
 let conversationId = "";
 let eventSource = null;
 
-const messages = document.getElementById("messages");
-const input = document.getElementById("userInput");
+const messagesEl = document.getElementById("messages");
+const inputEl = document.getElementById("userInput");
 const sendBtn = document.getElementById("sendBtn");
 const stopBtn = document.getElementById("stopBtn");
 const convList = document.getElementById("conversationList");
 const newChatBtn = document.getElementById("newChat");
 
-/* ---------- helpers ---------- */
+/* Add message bubble */
 function addMessage(text, cls) {
   const div = document.createElement("div");
-  div.className = `msg ${cls}`;
+  div.className = "msg " + cls;
   div.textContent = text;
-  messages.appendChild(div);
-  messages.scrollTop = messages.scrollHeight;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
   return div;
 }
 
-/* ---------- conversations ---------- */
+/* Load conversations */
 function loadConversations() {
   fetch("/api/conversations")
     .then(r => r.json())
@@ -34,24 +34,25 @@ function loadConversations() {
     });
 }
 
+/* Load single conversation */
 function loadConversation(id) {
   fetch(`/api/conversation/${id}`)
     .then(r => r.json())
     .then(c => {
       conversationId = c.id;
-      messages.innerHTML = "";
+      messagesEl.innerHTML = "";
       c.messages.forEach(m => {
         addMessage(m.content, m.role === "user" ? "user" : "bot");
       });
     });
 }
 
-/* ---------- send message ---------- */
+/* Send message */
 sendBtn.onclick = () => {
-  const text = input.value.trim();
+  const text = inputEl.value.trim();
   if (!text) return;
 
-  input.value = "";
+  inputEl.value = "";
   addMessage(text, "user");
 
   if (eventSource) eventSource.close();
@@ -86,7 +87,7 @@ sendBtn.onclick = () => {
   };
 };
 
-/* ---------- stop ---------- */
+/* Stop streaming */
 stopBtn.onclick = () => {
   if (eventSource) {
     eventSource.close();
@@ -95,11 +96,11 @@ stopBtn.onclick = () => {
   }
 };
 
-/* ---------- new chat ---------- */
+/* New chat */
 newChatBtn.onclick = () => {
   conversationId = "";
-  messages.innerHTML = "";
+  messagesEl.innerHTML = "";
 };
 
-/* init */
+/* Init */
 loadConversations();
