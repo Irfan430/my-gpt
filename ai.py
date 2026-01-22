@@ -142,11 +142,21 @@ def create_new_conversation(title=None):
     return conversation_id
 
 def add_message_to_conversation(conversation_id, role, content, tokens=0):
-    """Add message to conversation"""
+    """Add message to conversation - FIXED VERSION"""
     conversation = get_conversation(conversation_id)
     if not conversation:
-        conversation = create_new_conversation()
-        conversation = get_conversation(conversation_id)
+        # ❌ ভুল: conversation = create_new_conversation()  # এটা নতুন ID তৈরি করে
+        # ✅ ঠিক: নতুন কনভারসেশন তৈরি করলেও একই ID দিয়ে
+        conversation = {
+            "id": conversation_id,
+            "title": content[:100] + "..." if len(content) > 100 else content,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "messages": [],
+            "model": DEFAULT_MODEL,
+            "token_count": 0,
+            "context_window": MAX_CONTEXT_WINDOW
+        }
     
     message = {
         "role": role,
@@ -579,7 +589,7 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
 
 # ============ WEBUI FUNCTIONS ============
 def start_webui():
-    """Start WebUI server"""
+    """Start WebUI server - FIXED VERSION"""
     global webui_app, webui_running
     
     config = load_config()
@@ -600,19 +610,42 @@ def start_webui():
             return send_from_directory('public', path)
         return send_from_directory('public', 'index.html')
     
-    # API Routes - UPDATED FOR JSON STORAGE
-    @webui_app.route('/api/chat/stream', methods=['POST'])
+    # API Routes - FIXED: GET + query params for EventSource compatibility
+    @webui_app.route('/api/chat/stream')
     def api_chat_stream():
-        data = request.json
-        message = data.get('message', '')
-        model = data.get('model', None)
-        conversation_id = data.get('conversation_id', '')
+        # ✅ FIXED: GET with query params (EventSource compatible)
+        message = request.args.get('message', '')
+        model = request.args.get('model', None)
+        conversation_id = request.args.get('conversation_id', None)
+        history = request.args.get('history', '[]')  # JSON string as query param
         
         if not message:
             def generate_error():
                 yield f"data: {json.dumps({'error': 'No message provided'})}\n\n"
                 yield "data: [DONE]\n\n"
             return Response(generate_error(), mimetype='text/event-stream')
+        
+        # Parse history if provided
+        try:
+            history_data = json.loads(history)
+            # If client sends history, update our storage
+            if history_data and conversation_id:
+                conversation = get_conversation(conversation_id)
+                if not conversation:
+                    # Create new conversation with existing ID
+                    conversation = {
+                        "id": conversation_id,
+                        "title": message[:100] + "..." if len(message) > 100 else message,
+                        "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat(),
+                        "messages": [],
+                        "model": model or DEFAULT_MODEL,
+                        "token_count": 0,
+                        "context_window": MAX_CONTEXT_WINDOW
+                    }
+                    save_conversation(conversation_id, conversation)
+        except:
+            history_data = []
         
         if not conversation_id:
             conversation_id = create_new_conversation()
@@ -622,6 +655,32 @@ def start_webui():
                 yield chunk
         
         return Response(generate(), mimetype='text/event-stream')
+    
+    # Additional POST endpoint for non-streaming requests (optional)
+    @webui_app.route('/api/chat', methods=['POST'])
+    def api_chat_post():
+        """Optional POST endpoint for non-EventSource clients"""
+        data = request.json
+        message = data.get('message', '')
+        model = data.get('model', None)
+        conversation_id = data.get('conversation_id', None)
+        
+        if not message:
+            return jsonify({'error': 'No message provided'}), 400
+        
+        if not conversation_id:
+            conversation_id = create_new_conversation()
+        
+        # For POST, we need to collect all response and return at once
+        full_response = ""
+        for chunk in call_api_stream(message, conversation_id, model=model, for_webui=False):
+            if isinstance(chunk, str):
+                full_response += chunk
+        
+        return jsonify({
+            'response': full_response,
+            'conversation_id': conversation_id
+        })
     
     @webui_app.route('/api/conversations')
     def api_conversations():
@@ -725,8 +784,9 @@ def start_webui():
         return jsonify({
             'status': 'ok', 
             'timestamp': datetime.now().isoformat(),
-            'version': 'JSON-Storage',
-            'storage': 'Local JSON Files'
+            'version': 'JSON-Storage-FIXED',
+            'storage': 'Local JSON Files',
+            'compatibility': 'EventSource GET + Query Params'
         })
     
     # Start WebUI
@@ -734,8 +794,9 @@ def start_webui():
     print(f"\n{colors.bright_green}✅ WebUI Started!{colors.reset}")
     print(f"{colors.bright_cyan}🌐 Open: http://localhost:{port}{colors.reset}")
     print(f"{colors.bright_green}💾 JSON Storage Active (No Database Required!){colors.reset}")
+    print(f"{colors.bright_green}🔧 FIXED: EventSource GET compatibility{colors.reset}")
+    print(f"{colors.bright_green}🔧 FIXED: add_message_to_conversation() bug{colors.reset}")
     print(f"{colors.bright_green}📁 History File: {HISTORY_FILE}{colors.reset}")
-    print(f"{colors.bright_green}🔍 Search Across All Conversations Active!{colors.reset}")
     print(f"{colors.yellow}⚠️  DeepSeek API Limit: Max 8192 tokens per response{colors.reset}")
     
     try:
@@ -753,13 +814,17 @@ def banner():
         print(f"{colors.bright_red}{figlet.renderText('WormGPT')}{colors.reset}")
     except:
         print(f"{colors.bright_red}WormGPT{colors.reset}")
-    print(f"{colors.bright_cyan}JSON Storage v4.0 | No Database Required | Mobile Friendly{colors.reset}")
+    print(f"{colors.bright_cyan}JSON Storage v4.0 FIXED | EventSource Compatible{colors.reset}")
     print(f"{colors.bright_yellow}Made With ❤️  | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{colors.reset}\n")
     print(f"{colors.yellow}⚠️  Note: DeepSeek API supports max 8192 tokens per response{colors.reset}\n")
 
 def clear_screen():
     """Clear terminal screen"""
     os.system("cls" if platform.system() == "Windows" else "clear")
+
+# [Rest of the terminal functions remain the same...]
+# (chat_session, show_conversation_history, export_conversation_ui, etc.)
+# Copy the remaining terminal functions from the previous version...
 
 def chat_session():
     """Terminal chat session"""
@@ -1245,7 +1310,7 @@ def main_menu():
             webui_thread.start()
             time.sleep(2)
         
-        print(f"{colors.bright_cyan}[ Main Menu - JSON Storage ]{colors.reset}")
+        print(f"{colors.bright_cyan}[ Main Menu - JSON Storage FIXED ]{colors.reset}")
         print(f"{colors.yellow}1. Start Chat Session{colors.reset}")
         print(f"{colors.yellow}2. Manage Conversations{colors.reset}")
         print(f"{colors.yellow}3. Search Conversations{colors.reset}")
@@ -1257,6 +1322,7 @@ def main_menu():
         if config.get("webui_enabled"):
             print(f"\n{colors.bright_green}🌐 WebUI Active: http://localhost:{config.get('webui_port', 5000)}{colors.reset}")
             print(f"{colors.bright_green}💾 Storage: Local JSON Files (No Database){colors.reset}")
+            print(f"{colors.bright_green}🔧 FIXED: EventSource GET + Query Params{colors.reset}")
         
         try:
             choice = input(f"\n{colors.red}[>] Select (1-7): {colors.reset}")
