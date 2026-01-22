@@ -9,7 +9,6 @@ const newChatBtn = document.getElementById("newChatBtn");
 let eventSource = null;
 let conversationId = localStorage.getItem("conversation_id") || "";
 let sidebarState = 0;
-let lastUserMessage = "";
 
 /* ---------------- helpers ---------------- */
 
@@ -73,12 +72,7 @@ window.copyCode = (btn) => {
 
 function isIncomplete(text) {
   const fences = (text.match(/```/g) || []).length;
-  if (fences % 2 !== 0) return true;
-
-  const last = text.trim().split("\n").pop();
-  if (last && last.length < 5 && !last.endsWith(".")) return true;
-
-  return false;
+  return fences % 2 !== 0;
 }
 
 function showContinueButton(bubble) {
@@ -96,24 +90,16 @@ function showContinueButton(bubble) {
   bubble.appendChild(box);
 }
 
-/* ---------------- send message ---------------- */
+/* ---------------- stream core ---------------- */
 
-sendBtn.onclick = () => {
-  const text = userInput.value.trim();
-  if (!text || eventSource) return;
-
-  lastUserMessage = text;
-  userInput.value = "";
-
-  addMessage("user", escapeHtml(text));
-
+function startStream(message) {
   const assistantBubble = addMessage("assistant", "");
   let full = "";
 
   stopBtn.disabled = false;
 
   eventSource = new EventSource(
-    `/api/chat/stream?message=${encodeURIComponent(text)}&conversation_id=${conversationId}`
+    `/api/chat/stream?message=${encodeURIComponent(message)}&conversation_id=${conversationId}`
   );
 
   eventSource.onmessage = (e) => {
@@ -131,12 +117,35 @@ sendBtn.onclick = () => {
       return;
     }
 
-    const data = JSON.parse(e.data);
+    let data;
+    try {
+      data = JSON.parse(e.data);
+    } catch {
+      return;
+    }
+
+    // 🔥 conversation memory FIX
+    if (data.conversation_id && !conversationId) {
+      conversationId = data.conversation_id;
+      localStorage.setItem("conversation_id", conversationId);
+    }
+
     if (data.content) {
       full += data.content;
-      assistantBubble.textContent = full; // live typing (plain)
+      assistantBubble.textContent = full; // live typing
     }
   };
+}
+
+/* ---------------- send ---------------- */
+
+sendBtn.onclick = () => {
+  const text = userInput.value.trim();
+  if (!text || eventSource) return;
+
+  userInput.value = "";
+  addMessage("user", escapeHtml(text));
+  startStream(text);
 };
 
 stopBtn.onclick = () => {
@@ -151,39 +160,7 @@ stopBtn.onclick = () => {
 
 function sendContinue() {
   if (eventSource) return;
-
-  const assistantBubble = addMessage("assistant", "");
-  let full = "";
-
-  stopBtn.disabled = false;
-
-  eventSource = new EventSource(
-    `/api/chat/stream?message=${encodeURIComponent(
-      "continue from where you stopped, do not repeat previous content"
-    )}&conversation_id=${conversationId}`
-  );
-
-  eventSource.onmessage = (e) => {
-    if (e.data === "[DONE]") {
-      eventSource.close();
-      eventSource = null;
-      stopBtn.disabled = true;
-
-      assistantBubble.innerHTML = parseMessage(full);
-      hljs.highlightAll();
-
-      if (isIncomplete(full)) {
-        showContinueButton(assistantBubble);
-      }
-      return;
-    }
-
-    const data = JSON.parse(e.data);
-    if (data.content) {
-      full += data.content;
-      assistantBubble.textContent = full;
-    }
-  };
+  startStream("continue from where you stopped, do not repeat previous content");
 }
 
 /* ---------------- sidebar ---------------- */
