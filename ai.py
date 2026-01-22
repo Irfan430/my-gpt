@@ -7,12 +7,12 @@ import requests
 import threading
 import subprocess
 import traceback
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, Response, send_from_directory, send_file
-import webbrowser
-from pathlib import Path
-import sqlite3
 import hashlib
+from datetime import datetime, timedelta
+from pathlib import Path
+from flask import Flask, request, jsonify, Response, send_from_directory
+from flask_cors import CORS
+import webbrowser
 
 try:
     import pyfiglet
@@ -49,7 +49,7 @@ class colors:
     white = "\033[0;37m"
     bright_black = "\033[1;30m"
     bright_red = "\033[1;31m"
-    bright_green = "\033[1;32m"
+    bright_green = "\033[1;33m"
     bright_yellow = "\033[1;33m"
     bright_blue = "\033[1;34m"
     bright_purple = "\033[1;35m"
@@ -63,18 +63,13 @@ CONFIG_FILE = "wormgpt_config.json"
 PROMPT_FILE = "system-prompt.txt"
 CONVERSATIONS_DIR = "conversations"
 CACHE_DIR = "cache"
-DATABASE_FILE = "wormgpt.db"
+HISTORY_FILE = "chat_history.json"
 DEFAULT_API_KEY = ""
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
-SUPPORTED_LANGUAGES = ["English", "Indonesian", "Spanish", "Arabic", "Thai", "Portuguese", "Bengali", "Hindi", "Chinese", "Japanese", "Korean", "French", "German", "Russian"]
-AVAILABLE_MODELS = ["deepseek-chat", "deepseek-coder"]
-
-# DeepSeek API Limits
-MAX_TOKENS_LIMIT = 8192  # DeepSeek এর maximum limit
-MAX_CONTEXT_WINDOW = 128000  # Context window limit
-MAX_INPUT_TOKENS = 4096  # Input token limit
-MAX_OUTPUT_TOKENS = 4096  # Output token limit
+MAX_TOKENS_LIMIT = 8192
+MAX_CONTEXT_WINDOW = 128000
+MAX_OUTPUT_TOKENS = 4096
 
 # Global variables
 webui_app = None
@@ -85,73 +80,201 @@ webui_running = False
 Path(CONVERSATIONS_DIR).mkdir(exist_ok=True)
 Path(CACHE_DIR).mkdir(exist_ok=True)
 
-# ============ DATABASE FUNCTIONS ============
-def init_database():
-    """Initialize SQLite database for persistent storage"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    
-    # Conversations table with unlimited history
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS conversations (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        model TEXT,
-        context_window INTEGER DEFAULT 128000,
-        token_count INTEGER DEFAULT 0,
-        settings TEXT,
-        is_archived INTEGER DEFAULT 0
-    )
-    ''')
-    
-    # Messages table with no deletion limit
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        conversation_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        tokens INTEGER DEFAULT 0,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (conversation_id) REFERENCES conversations (id)
-    )
-    ''')
-    
-    # Create indexes for performance
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_conversation_id ON messages (conversation_id)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_conversation_updated ON conversations (updated_at)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)')
-    
-    # Cache table for API responses
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS cache (
-        hash TEXT PRIMARY KEY,
-        query TEXT NOT NULL,
-        response TEXT NOT NULL,
-        model TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        expires_at TIMESTAMP
-    )
-    ''')
-    
-    # Settings table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS app_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    )
-    ''')
-    
-    conn.commit()
-    conn.close()
+# ============ JSON-BASED STORAGE FUNCTIONS ============
+def load_history():
+    """Load conversation history from JSON file"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
 
-def get_db_connection():
-    """Get database connection with row factory"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+def save_history(history_data):
+    """Save conversation history to JSON file"""
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history_data, f, indent=2, ensure_ascii=False)
+        return True
+    except:
+        return False
+
+def get_conversation(conversation_id):
+    """Get conversation from JSON history"""
+    history = load_history()
+    return history.get(conversation_id)
+
+def save_conversation(conversation_id, conversation_data):
+    """Save conversation to JSON history"""
+    history = load_history()
+    history[conversation_id] = conversation_data
+    return save_history(history)
+
+def create_new_conversation(title=None):
+    """Create a new conversation"""
+    if not title:
+        title = f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    
+    conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+    
+    conversation_data = {
+        "id": conversation_id,
+        "title": title,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "messages": [],
+        "model": DEFAULT_MODEL,
+        "token_count": 0,
+        "context_window": MAX_CONTEXT_WINDOW
+    }
+    
+    save_conversation(conversation_id, conversation_data)
+    
+    # Also save individual JSON file
+    conv_file = os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
+    try:
+        with open(conv_file, "w", encoding="utf-8") as f:
+            json.dump(conversation_data, f, indent=2, ensure_ascii=False)
+    except:
+        pass
+    
+    return conversation_id
+
+def add_message_to_conversation(conversation_id, role, content, tokens=0):
+    """Add message to conversation"""
+    conversation = get_conversation(conversation_id)
+    if not conversation:
+        conversation = create_new_conversation()
+        conversation = get_conversation(conversation_id)
+    
+    message = {
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now().isoformat(),
+        "tokens": tokens
+    }
+    
+    conversation["messages"].append(message)
+    conversation["updated_at"] = datetime.now().isoformat()
+    conversation["token_count"] += tokens
+    
+    # Update title if first user message
+    if role == "user" and len(conversation["messages"]) == 1:
+        if len(content) > 100:
+            conversation["title"] = content[:100] + "..."
+        else:
+            conversation["title"] = content
+    
+    # Save to main history
+    save_conversation(conversation_id, conversation)
+    
+    # Also update individual file
+    conv_file = os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
+    try:
+        with open(conv_file, "w", encoding="utf-8") as f:
+            json.dump(conversation, f, indent=2, ensure_ascii=False)
+    except:
+        pass
+    
+    return True
+
+def get_conversation_messages(conversation_id, limit=None):
+    """Get messages from conversation"""
+    conversation = get_conversation(conversation_id)
+    if not conversation:
+        return []
+    
+    messages = conversation.get("messages", [])
+    if limit:
+        return messages[-limit:]
+    return messages
+
+def list_conversations(limit=100, offset=0, search=None):
+    """List all conversations"""
+    history = load_history()
+    conversations = []
+    
+    for conv_id, conv_data in history.items():
+        if search:
+            # Search in title and messages
+            found = False
+            if search.lower() in conv_data.get("title", "").lower():
+                found = True
+            else:
+                for msg in conv_data.get("messages", []):
+                    if search.lower() in msg.get("content", "").lower():
+                        found = True
+                        break
+            
+            if not found:
+                continue
+        
+        conversations.append({
+            "id": conv_id,
+            "title": conv_data.get("title", "Untitled"),
+            "created_at": conv_data.get("created_at", ""),
+            "updated_at": conv_data.get("updated_at", ""),
+            "model": conv_data.get("model", DEFAULT_MODEL),
+            "message_count": len(conv_data.get("messages", [])),
+            "token_count": conv_data.get("token_count", 0)
+        })
+    
+    # Sort by updated_at descending
+    conversations.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    
+    # Apply offset and limit
+    if offset:
+        conversations = conversations[offset:]
+    if limit:
+        conversations = conversations[:limit]
+    
+    return conversations
+
+def delete_conversation(conversation_id):
+    """Delete conversation"""
+    history = load_history()
+    if conversation_id in history:
+        del history[conversation_id]
+        save_history(history)
+    
+    # Delete individual file
+    conv_file = os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
+    if os.path.exists(conv_file):
+        try:
+            os.remove(conv_file)
+        except:
+            pass
+    
+    return True
+
+def search_conversations_all(query, limit=50):
+    """Search across all conversations"""
+    results = []
+    history = load_history()
+    
+    for conv_id, conv_data in history.items():
+        title_matches = query.lower() in conv_data.get("title", "").lower()
+        content_matches = False
+        snippet = ""
+        
+        # Search in messages
+        for msg in conv_data.get("messages", []):
+            if query.lower() in msg.get("content", "").lower():
+                content_matches = True
+                snippet = msg.get("content", "")[:200]
+                break
+        
+        if title_matches or content_matches:
+            results.append({
+                "id": conv_id,
+                "title": conv_data.get("title", "Untitled"),
+                "updated_at": conv_data.get("updated_at", ""),
+                "snippet": snippet
+            })
+    
+    results.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    return results[:limit]
 
 # ============ CONFIGURATION FUNCTIONS ============
 def load_config():
@@ -160,339 +283,48 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 config = json.load(f)
-                # Set defaults for any missing keys
-                default_config = create_default_config()
-                for key in default_config:
-                    if key not in config:
-                        config[key] = default_config[key]
-                return config
-        except Exception as e:
-            print(f"{colors.red}Error loading config: {e}{colors.reset}")
-            return create_default_config()
+        except:
+            config = {}
     else:
-        return create_default_config()
-
-def create_default_config():
-    """Create default configuration"""
-    return {
+        config = {}
+    
+    # Set defaults
+    defaults = {
         "api_key": DEFAULT_API_KEY,
         "base_url": DEFAULT_BASE_URL,
         "model": DEFAULT_MODEL,
-        "language": "English",
         "temperature": 0.7,
         "top_p": 0.9,
         "webui_port": 5000,
-        "webui_enabled": False,
+        "webui_enabled": True,
         "stream": True,
-        "max_history": 0,  # 0 means unlimited
-        "max_tokens": MAX_TOKENS_LIMIT,  # DeepSeek limit
-        "auto_save": True,
-        "auto_scroll": True,
-        "dark_mode": True,
-        "context_window": MAX_CONTEXT_WINDOW,
-        "max_input_tokens": MAX_INPUT_TOKENS,
+        "max_tokens": MAX_TOKENS_LIMIT,
         "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "context_window": MAX_CONTEXT_WINDOW,
+        "auto_save": True,
+        "dark_mode": True,
         "enable_cache": True,
-        "cache_ttl_days": 30,
-        "auto_backup": True,
-        "backup_interval_hours": 24,
-        "enable_compression": True,
-        "compression_level": 6,
-        "conversation_retention_days": 0,  # 0 means forever
-        "enable_search": True,
-        "search_index_interval": 3600
+        "cache_ttl_days": 30
     }
+    
+    for key, value in defaults.items():
+        if key not in config:
+            config[key] = value
+    
+    return config
 
 def save_config(config):
     """Save configuration to JSON file"""
     try:
-        # Ensure token limits are within API limits
+        # Ensure limits
         config["max_tokens"] = min(config.get("max_tokens", MAX_TOKENS_LIMIT), MAX_TOKENS_LIMIT)
         config["max_output_tokens"] = min(config.get("max_output_tokens", MAX_OUTPUT_TOKENS), MAX_TOKENS_LIMIT)
         
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
         return True
-    except Exception as e:
-        print(f"{colors.red}Error saving config: {e}{colors.reset}")
+    except:
         return False
-
-# ============ CONVERSATION FUNCTIONS ============
-def create_new_conversation(title=None):
-    """Create a new conversation with unlimited retention"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    
-    if not title:
-        title = "New Conversation"
-    
-    config = load_config()
-    
-    cursor.execute('''
-    INSERT INTO conversations (id, title, model, context_window, settings)
-    VALUES (?, ?, ?, ?, ?)
-    ''', (
-        conversation_id,
-        title,
-        config["model"],
-        config["context_window"],
-        json.dumps(config)
-    ))
-    
-    conn.commit()
-    conn.close()
-    
-    # Also create JSON backup file
-    backup_conversation_to_json(conversation_id)
-    
-    return conversation_id
-
-def backup_conversation_to_json(conversation_id):
-    """Backup conversation to JSON file"""
-    conversation = load_conversation(conversation_id)
-    if conversation:
-        conversation_file = os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
-        try:
-            with open(conversation_file, "w", encoding="utf-8") as f:
-                json.dump(conversation, f, indent=2, ensure_ascii=False)
-        except:
-            pass
-
-def load_conversation(conversation_id):
-    """Load conversation from database"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Get conversation details
-    cursor.execute('SELECT * FROM conversations WHERE id = ?', (conversation_id,))
-    conv_row = cursor.fetchone()
-    
-    if not conv_row:
-        conn.close()
-        return None
-    
-    # Get all messages (no limit)
-    cursor.execute('''
-    SELECT role, content, tokens, timestamp 
-    FROM messages 
-    WHERE conversation_id = ? 
-    ORDER BY timestamp ASC
-    ''', (conversation_id,))
-    
-    messages = []
-    for row in cursor.fetchall():
-        messages.append({
-            "role": row["role"],
-            "content": row["content"],
-            "tokens": row["tokens"] or 0,
-            "timestamp": row["timestamp"]
-        })
-    
-    conn.close()
-    
-    return {
-        "id": conv_row["id"],
-        "title": conv_row["title"],
-        "created_at": conv_row["created_at"],
-        "updated_at": conv_row["updated_at"],
-        "model": conv_row["model"] or "deepseek-chat",
-        "context_window": conv_row["context_window"] or MAX_CONTEXT_WINDOW,
-        "token_count": conv_row["token_count"] or 0,
-        "messages": messages,
-        "settings": json.loads(conv_row["settings"]) if conv_row["settings"] else {}
-    }
-
-def save_conversation_message(conversation_id, role, content, tokens=0):
-    """Save message to conversation (unlimited storage)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Save message
-    cursor.execute('''
-    INSERT INTO messages (conversation_id, role, content, tokens)
-    VALUES (?, ?, ?, ?)
-    ''', (conversation_id, role, content, tokens))
-    
-    # Update conversation token count and timestamp
-    cursor.execute('''
-    UPDATE conversations 
-    SET token_count = token_count + ?, 
-        updated_at = CURRENT_TIMESTAMP 
-    WHERE id = ?
-    ''', (tokens, conversation_id))
-    
-    # Update title if this is first user message
-    if role == "user":
-        cursor.execute('SELECT COUNT(*) as count FROM messages WHERE conversation_id = ?', (conversation_id,))
-        count = cursor.fetchone()["count"]
-        if count == 1:  # First message
-            title = content[:150]
-            if len(content) > 150:
-                title = title + "..."
-            cursor.execute('UPDATE conversations SET title = ? WHERE id = ?', (title, conversation_id))
-    
-    conn.commit()
-    conn.close()
-    
-    # Auto-backup
-    config = load_config()
-    if config.get("auto_backup", True):
-        backup_conversation_to_json(conversation_id)
-    
-    return True
-
-def get_conversation_messages(conversation_id, limit=None):
-    """Get conversation messages (all or limited)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    query = '''
-    SELECT role, content, tokens, timestamp 
-    FROM messages 
-    WHERE conversation_id = ? 
-    ORDER BY timestamp ASC
-    '''
-    
-    if limit:
-        query += f' LIMIT {limit}'
-    
-    cursor.execute(query, (conversation_id,))
-    
-    messages = []
-    for row in cursor.fetchall():
-        messages.append({
-            "role": row["role"],
-            "content": row["content"],
-            "tokens": row["tokens"] or 0,
-            "timestamp": row["timestamp"]
-        })
-    
-    conn.close()
-    return messages
-
-def list_conversations(limit=100, offset=0, search=None):
-    """List all conversations with optional search"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    query = '''
-    SELECT c.id, c.title, c.created_at, c.updated_at, c.model, 
-           c.context_window, c.token_count,
-           COUNT(m.id) as message_count
-    FROM conversations c
-    LEFT JOIN messages m ON c.id = m.conversation_id
-    WHERE c.is_archived = 0
-    '''
-    
-    params = []
-    
-    if search:
-        query += ''' AND (
-            c.title LIKE ? OR 
-            EXISTS (
-                SELECT 1 FROM messages m2 
-                WHERE m2.conversation_id = c.id 
-                AND m2.content LIKE ?
-            )
-        )'''
-        search_term = f"%{search}%"
-        params.extend([search_term, search_term])
-    
-    query += '''
-    GROUP BY c.id
-    ORDER BY c.updated_at DESC
-    LIMIT ? OFFSET ?
-    '''
-    
-    params.extend([limit, offset])
-    
-    cursor.execute(query, params)
-    
-    conversations = []
-    for row in cursor.fetchall():
-        conversations.append({
-            "id": row["id"],
-            "title": row["title"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "model": row["model"],
-            "context_window": row["context_window"],
-            "token_count": row["token_count"],
-            "message_count": row["message_count"]
-        })
-    
-    conn.close()
-    return conversations
-
-def delete_conversation(conversation_id):
-    """Delete conversation (manual deletion only)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Delete messages
-    cursor.execute('DELETE FROM messages WHERE conversation_id = ?', (conversation_id,))
-    
-    # Delete conversation
-    cursor.execute('DELETE FROM conversations WHERE id = ?', (conversation_id,))
-    
-    conn.commit()
-    conn.close()
-    
-    # Delete JSON backup
-    conversation_file = os.path.join(CONVERSATIONS_DIR, f"{conversation_id}.json")
-    if os.path.exists(conversation_file):
-        try:
-            os.remove(conversation_file)
-        except:
-            pass
-    
-    return True
-
-def archive_conversation(conversation_id, archive=True):
-    """Archive or unarchive conversation"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('UPDATE conversations SET is_archived = ? WHERE id = ?', 
-                   (1 if archive else 0, conversation_id))
-    
-    conn.commit()
-    conn.close()
-    return True
-
-def search_conversations(query, limit=50):
-    """Search across all conversations"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    search_query = f"%{query}%"
-    
-    cursor.execute('''
-    SELECT DISTINCT c.id, c.title, c.updated_at,
-           (SELECT m.content FROM messages m 
-            WHERE m.conversation_id = c.id 
-            AND m.content LIKE ? 
-            LIMIT 1) as snippet
-    FROM conversations c
-    JOIN messages m ON c.id = m.conversation_id
-    WHERE m.content LIKE ? OR c.title LIKE ?
-    ORDER BY c.updated_at DESC
-    LIMIT ?
-    ''', (search_query, search_query, search_query, limit))
-    
-    results = []
-    for row in cursor.fetchall():
-        results.append({
-            "id": row["id"],
-            "title": row["title"],
-            "updated_at": row["updated_at"],
-            "snippet": row["snippet"][:200] + "..." if row["snippet"] and len(row["snippet"]) > 200 else row["snippet"]
-        })
-    
-    conn.close()
-    return results
 
 # ============ CACHE FUNCTIONS ============
 def get_cache_hash(query, model, context):
@@ -501,71 +333,77 @@ def get_cache_hash(query, model, context):
     return hashlib.md5(cache_string.encode()).hexdigest()
 
 def get_cached_response(query, model, context):
-    """Get cached response if exists and not expired"""
+    """Get cached response"""
     config = load_config()
     if not config.get("enable_cache", True):
         return None
     
     cache_hash = get_cache_hash(query, model, context)
+    cache_file = os.path.join(CACHE_DIR, f"{cache_hash}.json")
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+            
+            # Check expiry
+            expires_at = cache_data.get("expires_at")
+            if expires_at:
+                if datetime.fromisoformat(expires_at) < datetime.now():
+                    os.remove(cache_file)
+                    return None
+            
+            return cache_data.get("response")
+        except:
+            return None
     
-    cursor.execute('''
-    SELECT response FROM cache 
-    WHERE hash = ? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-    ''', (cache_hash,))
-    
-    row = cursor.fetchone()
-    conn.close()
-    
-    return row["response"] if row else None
+    return None
 
-def cache_response(query, model, context, response, ttl_days=None):
+def cache_response(query, model, context, response, ttl_days=30):
     """Cache API response"""
     config = load_config()
     if not config.get("enable_cache", True):
         return
     
-    if ttl_days is None:
-        ttl_days = config.get("cache_ttl_days", 30)
-    
     cache_hash = get_cache_hash(query, model, context)
+    cache_file = os.path.join(CACHE_DIR, f"{cache_hash}.json")
     
     expires_at = None
     if ttl_days > 0:
         expires_at = (datetime.now() + timedelta(days=ttl_days)).isoformat()
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    cache_data = {
+        "query": query[:500],
+        "response": response,
+        "model": model,
+        "created_at": datetime.now().isoformat(),
+        "expires_at": expires_at
+    }
     
-    cursor.execute('''
-    INSERT OR REPLACE INTO cache (hash, query, response, model, expires_at)
-    VALUES (?, ?, ?, ?, ?)
-    ''', (cache_hash, query[:500], response, model, expires_at))
-    
-    conn.commit()
-    conn.close()
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+    except:
+        pass
 
 # ============ API FUNCTIONS ============
 def get_system_prompt():
-    """Get system prompt from file"""
+    """Get system prompt"""
     try:
         if os.path.exists(PROMPT_FILE):
             with open(PROMPT_FILE, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if content:
-                    return content
-        return "You are WormGPT, an advanced AI assistant with 128K token context window. You can handle very large projects and long conversations. You should provide detailed, comprehensive responses."
+                return f.read().strip()
     except:
-        return "You are WormGPT, an advanced AI assistant with 128K token context window. You can handle very large projects and long conversations. You should provide detailed, comprehensive responses."
+        pass
+    
+    return "You are WormGPT, an advanced AI assistant with 128K token context window. You can handle very large projects and long conversations. You should provide detailed, comprehensive responses."
 
 def estimate_tokens(text):
     """Estimate token count"""
     return len(text) // 4
 
 def smart_context_management(messages, max_context_tokens=MAX_CONTEXT_WINDOW):
-    """Smart context management for large conversations"""
+    """Smart context management"""
     if not messages:
         return messages
     
@@ -574,7 +412,7 @@ def smart_context_management(messages, max_context_tokens=MAX_CONTEXT_WINDOW):
     if total_tokens <= max_context_tokens:
         return messages
     
-    # Keep important parts: first 20%, last 60%, and every 10th message in between
+    # Keep: first 20%, last 60%, and important messages
     total_msgs = len(messages)
     keep_indices = set()
     
@@ -587,11 +425,6 @@ def smart_context_management(messages, max_context_tokens=MAX_CONTEXT_WINDOW):
     # Every 10th message in middle
     for i in range(int(total_msgs * 0.2), int(total_msgs * 0.4), 10):
         keep_indices.add(i)
-    
-    # Always keep system messages if present
-    for i, msg in enumerate(messages):
-        if msg.get("role") == "system":
-            keep_indices.add(i)
     
     # Sort indices and get messages
     sorted_indices = sorted(keep_indices)
@@ -611,21 +444,28 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
     
     current_model = model or config["model"]
     
-    # Check cache first
+    # Get conversation messages
     messages = get_conversation_messages(conversation_id)
-    context_hash = json.dumps([{"role": m["role"], "content": m["content"]} for m in messages[-20:]], sort_keys=True)
     
+    # Create context hash for cache
+    context_hash = json.dumps([{"role": msg["role"], "content": msg["content"]} for msg in messages[-20:]], sort_keys=True)
+    
+    # Check cache
     cached = get_cached_response(user_input, current_model, context_hash)
     if cached and config.get("enable_cache", True):
-        # Return cached response
+        # Save user message
         user_tokens = estimate_tokens(user_input)
-        save_conversation_message(conversation_id, "user", user_input, user_tokens)
+        add_message_to_conversation(conversation_id, "user", user_input, user_tokens)
         
+        # Save assistant response
         assistant_tokens = estimate_tokens(cached)
-        save_conversation_message(conversation_id, "assistant", cached, assistant_tokens)
+        add_message_to_conversation(conversation_id, "assistant", cached, assistant_tokens)
         
         if for_webui:
-            # Stream cached response like real API
+            # Send conversation_id first
+            yield f"data: {json.dumps({'conversation_id': conversation_id})}\n\n"
+            
+            # Stream cached response
             for i in range(0, len(cached), 10):
                 chunk = cached[i:i+10]
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
@@ -636,15 +476,15 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
         return
     
     # Prepare API messages
-    messages = get_conversation_messages(conversation_id)
     api_messages = []
     
     # Add system prompt
     api_messages.append({"role": "system", "content": get_system_prompt()})
     
-    # Smart context management
+    # Add conversation history with smart management
     context_messages = smart_context_management(messages, config.get("context_window", MAX_CONTEXT_WINDOW))
-    api_messages.extend([{"role": msg["role"], "content": msg["content"]} for msg in context_messages])
+    for msg in context_messages:
+        api_messages.append({"role": msg["role"], "content": msg["content"]})
     
     # Add current user message
     api_messages.append({"role": "user", "content": user_input})
@@ -655,7 +495,6 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
             "Content-Type": "application/json"
         }
         
-        # DeepSeek API requires max_tokens between 1 and 8192
         max_tokens = min(config.get("max_output_tokens", MAX_OUTPUT_TOKENS), MAX_TOKENS_LIMIT)
         
         data = {
@@ -663,7 +502,7 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
             "messages": api_messages,
             "temperature": config.get("temperature", 0.7),
             "top_p": config.get("top_p", 0.9),
-            "max_tokens": max_tokens,  # Fixed: Within DeepSeek limits
+            "max_tokens": max_tokens,
             "stream": True
         }
         
@@ -684,6 +523,11 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
             return
         
         full_response = ""
+        
+        # Send conversation_id first (important for WebUI)
+        if for_webui:
+            yield f"data: {json.dumps({'conversation_id': conversation_id})}\n\n"
+        
         for line in response.iter_lines():
             if line:
                 line = line.decode('utf-8', errors='ignore')
@@ -709,27 +553,29 @@ def call_api_stream(user_input, conversation_id, model=None, for_webui=True):
         user_tokens = estimate_tokens(user_input)
         assistant_tokens = estimate_tokens(full_response)
         
-        save_conversation_message(conversation_id, "user", user_input, user_tokens)
-        save_conversation_message(conversation_id, "assistant", full_response, assistant_tokens)
+        add_message_to_conversation(conversation_id, "user", user_input, user_tokens)
+        add_message_to_conversation(conversation_id, "assistant", full_response, assistant_tokens)
         
         # Cache the response
         cache_response(user_input, current_model, context_hash, full_response)
         
         if for_webui:
             yield f"data: [DONE]\n\n"
+        else:
+            print()
         
     except requests.exceptions.Timeout:
         error_msg = "Request timeout. Please try again."
         if for_webui:
             yield f"data: {json.dumps({'error': error_msg})}\n\n"
         else:
-            print(f"{colors.red}{error_msg}{colors.reset}")
+            print(f"\n{colors.red}{error_msg}{colors.reset}")
     except Exception as e:
         error_msg = f"Error: {str(e)}"
         if for_webui:
             yield f"data: {json.dumps({'error': error_msg})}\n\n"
         else:
-            print(f"{colors.red}{error_msg}{colors.reset}")
+            print(f"\n{colors.red}{error_msg}{colors.reset}")
 
 # ============ WEBUI FUNCTIONS ============
 def start_webui():
@@ -754,12 +600,13 @@ def start_webui():
             return send_from_directory('public', path)
         return send_from_directory('public', 'index.html')
     
-    # API Routes
-    @webui_app.route('/api/chat/stream')
+    # API Routes - UPDATED FOR JSON STORAGE
+    @webui_app.route('/api/chat/stream', methods=['POST'])
     def api_chat_stream():
-        message = request.args.get('message', '')
-        model = request.args.get('model', None)
-        conversation_id = request.args.get('conversation_id', '')
+        data = request.json
+        message = data.get('message', '')
+        model = data.get('model', None)
+        conversation_id = data.get('conversation_id', '')
         
         if not message:
             def generate_error():
@@ -776,26 +623,6 @@ def start_webui():
         
         return Response(generate(), mimetype='text/event-stream')
     
-    @webui_app.route('/api/chat', methods=['POST'])
-    def api_chat():
-        data = request.json
-        user_message = data.get('message', '')
-        conversation_id = data.get('conversation_id', '')
-        
-        if not user_message:
-            return jsonify({'error': 'No message provided'}), 400
-        
-        if not conversation_id:
-            conversation_id = create_new_conversation()
-        
-        # For non-streaming (not implemented in this version)
-        return jsonify({'error': 'Use streaming endpoint', 'conversation_id': conversation_id})
-    
-    @webui_app.route('/api/config')
-    def api_config():
-        config = load_config()
-        return jsonify(config)
-    
     @webui_app.route('/api/conversations')
     def api_conversations():
         search = request.args.get('search', '')
@@ -807,7 +634,7 @@ def start_webui():
     
     @webui_app.route('/api/conversation/<conversation_id>')
     def api_get_conversation(conversation_id):
-        conversation = load_conversation(conversation_id)
+        conversation = get_conversation(conversation_id)
         if conversation:
             return jsonify(conversation)
         return jsonify({'error': 'Conversation not found'}), 404
@@ -818,29 +645,17 @@ def start_webui():
             return jsonify({'success': True})
         return jsonify({'error': 'Failed to delete conversation'}), 404
     
-    @webui_app.route('/api/conversation/<conversation_id>/archive', methods=['POST'])
-    def api_archive_conversation(conversation_id):
-        if archive_conversation(conversation_id):
-            return jsonify({'success': True})
-        return jsonify({'error': 'Failed to archive conversation'}), 404
-    
     @webui_app.route('/api/conversation/<conversation_id>/clear', methods=['POST'])
     def api_clear_conversation(conversation_id):
         """Clear all messages from a conversation"""
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Delete all messages
-        cursor.execute('DELETE FROM messages WHERE conversation_id = ?', (conversation_id,))
-        
-        # Reset token count
-        cursor.execute('UPDATE conversations SET token_count = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', 
-                      (conversation_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'success': True})
+        conversation = get_conversation(conversation_id)
+        if conversation:
+            conversation["messages"] = []
+            conversation["token_count"] = 0
+            conversation["updated_at"] = datetime.now().isoformat()
+            save_conversation(conversation_id, conversation)
+            return jsonify({'success': True})
+        return jsonify({'error': 'Conversation not found'}), 404
     
     @webui_app.route('/api/search')
     def api_search():
@@ -848,49 +663,13 @@ def start_webui():
         if not query:
             return jsonify([])
         
-        results = search_conversations(query)
+        results = search_conversations_all(query)
         return jsonify(results)
     
-    @webui_app.route('/api/stats')
-    def api_stats():
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get total statistics
-        cursor.execute('SELECT COUNT(*) as total_conversations FROM conversations WHERE is_archived = 0')
-        total_conversations = cursor.fetchone()["total_conversations"]
-        
-        cursor.execute('SELECT COUNT(*) as total_messages FROM messages')
-        total_messages = cursor.fetchone()["total_messages"]
-        
-        cursor.execute('SELECT SUM(token_count) as total_tokens FROM conversations')
-        total_tokens = cursor.fetchone()["total_tokens"] or 0
-        
-        cursor.execute('''
-        SELECT strftime('%Y-%m', created_at) as month, COUNT(*) as count
-        FROM conversations 
-        WHERE created_at > date('now', '-1 year')
-        GROUP BY month
-        ORDER BY month DESC
-        LIMIT 12
-        ''')
-        
-        monthly_stats = []
-        for row in cursor.fetchall():
-            monthly_stats.append({
-                "month": row["month"],
-                "count": row["count"]
-            })
-        
-        conn.close()
-        
-        return jsonify({
-            "total_conversations": total_conversations,
-            "total_messages": total_messages,
-            "total_tokens": total_tokens,
-            "monthly_stats": monthly_stats,
-            "database_size": os.path.getsize(DATABASE_FILE) if os.path.exists(DATABASE_FILE) else 0
-        })
+    @webui_app.route('/api/config')
+    def api_config():
+        config = load_config()
+        return jsonify(config)
     
     @webui_app.route('/api/update_config', methods=['POST'])
     def api_update_config():
@@ -898,68 +677,65 @@ def start_webui():
             data = request.json
             config = load_config()
             
-            for key in ['api_key', 'model', 'language', 'temperature', 'top_p', 
-                       'context_window', 'max_input_tokens', 'max_output_tokens',
-                       'max_history', 'auto_save', 'dark_mode', 'enable_cache',
-                       'cache_ttl_days', 'auto_backup', 'enable_compression',
-                       'conversation_retention_days', 'enable_search']:
-                if key in data:
+            for key, value in data.items():
+                if key in config:
+                    # Type conversion
                     if key in ['temperature', 'top_p']:
-                        config[key] = float(data[key])
-                    elif key in ['context_window', 'max_input_tokens', 'max_output_tokens',
-                               'max_history', 'cache_ttl_days', 'conversation_retention_days']:
-                        config[key] = int(data[key])
-                        # Ensure token limits are within API limits
-                        if key in ['max_output_tokens']:
+                        config[key] = float(value)
+                    elif key in ['max_tokens', 'max_output_tokens', 'context_window', 'webui_port']:
+                        config[key] = int(value)
+                        # Ensure limits
+                        if key in ['max_tokens', 'max_output_tokens']:
                             config[key] = min(config[key], MAX_TOKENS_LIMIT)
-                    elif key in ['auto_save', 'dark_mode', 'enable_cache', 'auto_backup',
-                               'enable_compression', 'enable_search']:
-                        config[key] = bool(data[key])
+                    elif key in ['webui_enabled', 'stream', 'auto_save', 'dark_mode', 'enable_cache']:
+                        config[key] = bool(value)
                     else:
-                        config[key] = data[key]
+                        config[key] = value
             
             save_config(config)
             return jsonify({'success': True})
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
     
-    @webui_app.route('/api/export/<conversation_id>')
-    def api_export_conversation(conversation_id):
-        conversation = load_conversation(conversation_id)
-        if conversation:
-            # Convert to text format
-            text = f"Conversation: {conversation['title']}\n"
-            text += f"Date: {conversation['created_at']}\n"
-            text += f"Model: {conversation['model']}\n"
-            text += "=" * 50 + "\n\n"
-            
-            for msg in conversation['messages']:
-                role = "User" if msg['role'] == 'user' else "Assistant"
-                text += f"{role}: {msg['content']}\n\n"
-            
-            return Response(
-                text,
-                mimetype='text/plain',
-                headers={'Content-Disposition': f'attachment; filename=conversation_{conversation_id}.txt'}
-            )
-        return jsonify({'error': 'Conversation not found'}), 404
+    @webui_app.route('/api/stats')
+    def api_stats():
+        history = load_history()
+        total_conversations = len(history)
+        
+        total_messages = 0
+        total_tokens = 0
+        
+        for conv_id, conv_data in history.items():
+            total_messages += len(conv_data.get("messages", []))
+            total_tokens += conv_data.get("token_count", 0)
+        
+        # Get history file size
+        history_size = os.path.getsize(HISTORY_FILE) if os.path.exists(HISTORY_FILE) else 0
+        
+        return jsonify({
+            "total_conversations": total_conversations,
+            "total_messages": total_messages,
+            "total_tokens": total_tokens,
+            "history_size": history_size,
+            "storage_type": "JSON (No Database)"
+        })
     
     @webui_app.route('/api/ping')
     def api_ping():
         return jsonify({
             'status': 'ok', 
             'timestamp': datetime.now().isoformat(),
-            'version': '4.0',
-            'features': ['unlimited_history', 'caching', 'search', 'persistent_storage']
+            'version': 'JSON-Storage',
+            'storage': 'Local JSON Files'
         })
     
     # Start WebUI
     webui_running = True
     print(f"\n{colors.bright_green}✅ WebUI Started!{colors.reset}")
     print(f"{colors.bright_cyan}🌐 Open: http://localhost:{port}{colors.reset}")
-    print(f"{colors.bright_green}💾 Unlimited Conversation History Active!{colors.reset}")
+    print(f"{colors.bright_green}💾 JSON Storage Active (No Database Required!){colors.reset}")
+    print(f"{colors.bright_green}📁 History File: {HISTORY_FILE}{colors.reset}")
     print(f"{colors.bright_green}🔍 Search Across All Conversations Active!{colors.reset}")
-    print(f"{colors.bright_green}💿 Persistent Database Storage Active!{colors.reset}")
     print(f"{colors.yellow}⚠️  DeepSeek API Limit: Max 8192 tokens per response{colors.reset}")
     
     try:
@@ -977,7 +753,7 @@ def banner():
         print(f"{colors.bright_red}{figlet.renderText('WormGPT')}{colors.reset}")
     except:
         print(f"{colors.bright_red}WormGPT{colors.reset}")
-    print(f"{colors.bright_cyan}Unlimited Conversation v4.0 | Persistent Storage | WebUI{colors.reset}")
+    print(f"{colors.bright_cyan}JSON Storage v4.0 | No Database Required | Mobile Friendly{colors.reset}")
     print(f"{colors.bright_yellow}Made With ❤️  | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{colors.reset}\n")
     print(f"{colors.yellow}⚠️  Note: DeepSeek API supports max 8192 tokens per response{colors.reset}\n")
 
@@ -985,71 +761,13 @@ def clear_screen():
     """Clear terminal screen"""
     os.system("cls" if platform.system() == "Windows" else "clear")
 
-def main_menu():
-    """Display main menu"""
-    while True:
-        config = load_config()
-        clear_screen()
-        banner()
-        
-        # Auto-start WebUI if enabled
-        if config.get("webui_enabled") and not webui_running:
-            print(f"{colors.bright_green}🚀 Starting WebUI...{colors.reset}")
-            webui_thread = threading.Thread(target=start_webui, daemon=True)
-            webui_thread.start()
-            time.sleep(2)
-        
-        print(f"{colors.bright_cyan}[ Main Menu - Unlimited Version ]{colors.reset}")
-        print(f"{colors.yellow}1. Start Chat Session{colors.reset}")
-        print(f"{colors.yellow}2. Manage Conversations{colors.reset}")
-        print(f"{colors.yellow}3. Search Conversations{colors.reset}")
-        print(f"{colors.yellow}4. System Settings{colors.reset}")
-        print(f"{colors.yellow}5. WebUI Settings ({'✅ Active' if config.get('webui_enabled') else '❌ Inactive'}){colors.reset}")
-        print(f"{colors.yellow}6. System Information{colors.reset}")
-        print(f"{colors.yellow}7. Database Maintenance{colors.reset}")
-        print(f"{colors.yellow}8. Exit{colors.reset}")
-        
-        if config.get("webui_enabled"):
-            print(f"\n{colors.bright_green}🌐 WebUI Active: http://localhost:{config.get('webui_port', 5000)}{colors.reset}")
-        
-        try:
-            choice = input(f"\n{colors.red}[>] Select (1-8): {colors.reset}")
-            
-            if choice == "1":
-                chat_session()
-            elif choice == "2":
-                manage_conversations()
-            elif choice == "3":
-                search_conversations_ui()
-            elif choice == "4":
-                system_settings()
-            elif choice == "5":
-                toggle_webui()
-            elif choice == "6":
-                system_info()
-            elif choice == "7":
-                database_maintenance()
-            elif choice == "8":
-                print(f"{colors.bright_cyan}✓ Goodbye!{colors.reset}")
-                sys.exit(0)
-            else:
-                print(f"{colors.red}✗ Invalid selection!{colors.reset}")
-                time.sleep(1)
-                
-        except KeyboardInterrupt:
-            print(f"\n{colors.red}✗ Cancelled!{colors.reset}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"\n{colors.red}✗ Error: {e}{colors.reset}")
-            time.sleep(2)
-
 def chat_session():
     """Terminal chat session"""
     config = load_config()
     clear_screen()
     banner()
     
-    print(f"{colors.bright_cyan}[ Chat Session - Unlimited History ]{colors.reset}")
+    print(f"{colors.bright_cyan}[ Chat Session - JSON Storage ]{colors.reset}")
     
     # Select conversation
     conversations = list_conversations(limit=15)
@@ -1077,7 +795,7 @@ def chat_session():
     else:
         conversation_id = create_new_conversation()
     
-    conversation = load_conversation(conversation_id)
+    conversation = get_conversation(conversation_id)
     
     clear_screen()
     banner()
@@ -1085,7 +803,7 @@ def chat_session():
     print(f"{colors.yellow}Messages: {len(conversation['messages']):,}{colors.reset}")
     print(f"{colors.yellow}Tokens: {conversation['token_count']:,}{colors.reset}")
     print(f"{colors.yellow}Model: {conversation['model']}{colors.reset}")
-    print(f"{colors.yellow}Max Output Tokens: {config.get('max_output_tokens', 4096)} (API Limit: 8192){colors.reset}")
+    print(f"{colors.yellow}Storage: JSON File{colors.reset}")
     print(f"{colors.yellow}Commands: menu, clear, history, export, search, stats, exit{colors.reset}")
     
     while True:
@@ -1098,7 +816,7 @@ def chat_session():
             command = user_input.lower().strip()
             
             if command == "exit":
-                print(f"{colors.bright_cyan}✓ Conversation saved{colors.reset}")
+                print(f"{colors.bright_cyan}✓ Conversation saved to {HISTORY_FILE}{colors.reset}")
                 return
             elif command == "menu":
                 return
@@ -1147,7 +865,6 @@ def show_conversation_history(conversation_id):
     print(f"\n{colors.bright_cyan}[ Conversation History ]{colors.reset}")
     print(f"{colors.yellow}Showing last 20 messages:{colors.reset}")
     
-    # Show last 20 messages
     for msg in messages[-20:]:
         role = "You" if msg["role"] == "user" else "WormGPT"
         time = datetime.fromisoformat(msg["timestamp"]).strftime("%H:%M")
@@ -1164,6 +881,11 @@ def show_conversation_history(conversation_id):
 
 def export_conversation_ui(conversation_id):
     """Export conversation UI"""
+    conversation = get_conversation(conversation_id)
+    if not conversation:
+        print(f"{colors.red}Conversation not found{colors.reset}")
+        return
+    
     print(f"\n{colors.bright_cyan}[ Export Conversation ]{colors.reset}")
     print(f"{colors.yellow}1. Export as Text File{colors.reset}")
     print(f"{colors.yellow}2. Export as JSON{colors.reset}")
@@ -1172,30 +894,30 @@ def export_conversation_ui(conversation_id):
     choice = input(f"{colors.red}[>] Select (1-3): {colors.reset}")
     
     if choice == "1":
-        conversation = load_conversation(conversation_id)
-        if conversation:
-            filename = f"conversation_{conversation_id}.txt"
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(f"Conversation: {conversation['title']}\n")
-                f.write(f"Date: {conversation['created_at']}\n")
-                f.write(f"Model: {conversation['model']}\n")
-                f.write("=" * 50 + "\n\n")
-                
-                for msg in conversation['messages']:
-                    role = "User" if msg['role'] == 'user' else "Assistant"
-                    f.write(f"{role}: {msg['content']}\n\n")
+        filename = f"conversation_{conversation_id}.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(f"Conversation: {conversation['title']}\n")
+            f.write(f"Date: {conversation['created_at'][:10]}\n")
+            f.write(f"Model: {conversation['model']}\n")
+            f.write(f"Total Messages: {len(conversation['messages'])}\n")
+            f.write(f"Total Tokens: {conversation['token_count']}\n")
+            f.write("=" * 50 + "\n\n")
             
-            print(f"{colors.bright_green}✓ Exported to: {filename}{colors.reset}")
-            time.sleep(2)
+            for msg in conversation['messages']:
+                role = "User" if msg['role'] == 'user' else "Assistant"
+                time = datetime.fromisoformat(msg['timestamp']).strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{time}] {role}:\n")
+                f.write(f"{msg['content']}\n\n")
+        
+        print(f"{colors.bright_green}✓ Exported to: {filename}{colors.reset}")
+        time.sleep(2)
     elif choice == "2":
-        conversation = load_conversation(conversation_id)
-        if conversation:
-            filename = f"conversation_{conversation_id}.json"
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(conversation, f, indent=2, ensure_ascii=False)
-            
-            print(f"{colors.bright_green}✓ Exported to: {filename}{colors.reset}")
-            time.sleep(2)
+        filename = f"conversation_{conversation_id}.json"
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(conversation, f, indent=2, ensure_ascii=False)
+        
+        print(f"{colors.bright_green}✓ Exported to: {filename}{colors.reset}")
+        time.sleep(2)
 
 def search_in_conversation(conversation_id):
     """Search within conversation"""
@@ -1236,7 +958,7 @@ def search_in_conversation(conversation_id):
 
 def show_conversation_stats(conversation_id):
     """Show conversation statistics"""
-    conversation = load_conversation(conversation_id)
+    conversation = get_conversation(conversation_id)
     
     if not conversation:
         print(f"{colors.red}✗ Conversation not found{colors.reset}")
@@ -1244,13 +966,14 @@ def show_conversation_stats(conversation_id):
     
     total_messages = len(conversation['messages'])
     user_messages = sum(1 for m in conversation['messages'] if m['role'] == 'user')
-    bot_messages = sum(1 for m in conversation['messages'] if m['role'] == 'assistant')
+    bot_messages = total_messages - user_messages
     
     total_tokens = conversation.get('token_count', 0)
     avg_tokens = total_tokens // total_messages if total_messages > 0 else 0
     
     print(f"\n{colors.bright_cyan}[ Conversation Statistics ]{colors.reset}")
     print(f"{colors.yellow}Title: {colors.green}{conversation['title']}{colors.reset}")
+    print(f"{colors.yellow}ID: {colors.green}{conversation_id}{colors.reset}")
     print(f"{colors.yellow}Created: {colors.green}{conversation['created_at'][:10]}{colors.reset}")
     print(f"{colors.yellow}Model: {colors.green}{conversation['model']}{colors.reset}")
     print(f"{colors.yellow}Total Messages: {colors.green}{total_messages}{colors.reset}")
@@ -1258,16 +981,11 @@ def show_conversation_stats(conversation_id):
     print(f"{colors.yellow}  • Assistant: {bot_messages}{colors.reset}")
     print(f"{colors.yellow}Total Tokens: {colors.green}{total_tokens:,}{colors.reset}")
     print(f"{colors.yellow}Average Tokens per Message: {colors.green}{avg_tokens}{colors.reset}")
-    print(f"{colors.yellow}Context Window: {colors.green}{conversation.get('context_window', MAX_CONTEXT_WINDOW):,}{colors.reset}")
-    
-    if conversation['messages']:
-        first_msg = conversation['messages'][0]['timestamp'][:10]
-        last_msg = conversation['messages'][-1]['timestamp'][:10]
-        print(f"{colors.yellow}Duration: {colors.green}{first_msg} to {last_msg}{colors.reset}")
+    print(f"{colors.yellow}Storage: {colors.green}JSON File{colors.reset}")
+    print(f"{colors.yellow}History File: {colors.green}{HISTORY_FILE}{colors.reset}")
     
     input(f"\n{colors.red}[>] Press Enter to continue {colors.reset}")
 
-# Other helper functions remain similar but with updated constants
 def manage_conversations():
     """Manage conversations in terminal"""
     clear_screen()
@@ -1275,14 +993,49 @@ def manage_conversations():
     
     print(f"{colors.bright_cyan}[ Manage Conversations ]{colors.reset}")
     print(f"{colors.yellow}1. View all conversations{colors.reset}")
-    print(f"{colors.yellow}2. Archive conversation{colors.reset}")
-    print(f"{colors.yellow}3. Delete conversation{colors.reset}")
-    print(f"{colors.yellow}4. View conversation details{colors.reset}")
-    print(f"{colors.yellow}5. Back to menu{colors.reset}")
+    print(f"{colors.yellow}2. Delete conversation{colors.reset}")
+    print(f"{colors.yellow}3. View conversation details{colors.reset}")
+    print(f"{colors.yellow}4. Back to menu{colors.reset}")
     
-    choice = input(f"\n{colors.red}[>] Select (1-5): {colors.reset}")
+    choice = input(f"\n{colors.red}[>] Select (1-4): {colors.reset}")
     
-    # Implementation remains the same...
+    if choice == "1":
+        conversations = list_conversations(limit=50)
+        if not conversations:
+            print(f"{colors.yellow}No conversations found.{colors.reset}")
+            time.sleep(1)
+            return
+        
+        print(f"\n{colors.bright_cyan}Total Conversations: {len(conversations)}{colors.reset}")
+        for i, conv in enumerate(conversations, 1):
+            print(f"{colors.green}{i:3d}. {conv['title']}{colors.reset}")
+            print(f"     ID: {conv['id']}")
+            print(f"     Messages: {conv['message_count']} | Tokens: {conv['token_count']}")
+            print(f"     Updated: {conv['updated_at'][:10]}")
+            print()
+        
+        input(f"{colors.red}[>] Press Enter to continue {colors.reset}")
+    
+    elif choice == "2":
+        conv_id = input(f"{colors.red}[>] Conversation ID to delete: {colors.reset}").strip()
+        if conv_id:
+            confirm = input(f"{colors.red}[>] Delete conversation? (y/n): {colors.reset}")
+            if confirm.lower() == 'y':
+                if delete_conversation(conv_id):
+                    print(f"{colors.bright_green}✓ Conversation deleted{colors.reset}")
+                else:
+                    print(f"{colors.red}✗ Failed to delete conversation{colors.reset}")
+                time.sleep(1)
+    
+    elif choice == "3":
+        conv_id = input(f"{colors.red}[>] Conversation ID to view: {colors.reset}").strip()
+        if conv_id:
+            conversation = get_conversation(conv_id)
+            if conversation:
+                show_conversation_stats(conv_id)
+            else:
+                print(f"{colors.red}✗ Conversation not found{colors.reset}")
+                time.sleep(1)
 
 def search_conversations_ui():
     """Search conversations in terminal"""
@@ -1297,7 +1050,7 @@ def search_conversations_ui():
         time.sleep(1)
         return
     
-    results = search_conversations(query)
+    results = search_conversations_all(query)
     
     if not results:
         print(f"{colors.yellow}No results found{colors.reset}")
@@ -1309,7 +1062,9 @@ def search_conversations_ui():
         print(f"{colors.green}{i:2d}. {result['title']}{colors.reset}")
         if result['snippet']:
             print(f"   {result['snippet']}")
+        print(f"   ID: {result['id']}")
         print(f"   Updated: {result['updated_at'][:10]}")
+        print()
     
     input(f"\n{colors.red}[>] Press Enter to continue {colors.reset}")
 
@@ -1322,117 +1077,136 @@ def system_settings():
     print(f"{colors.bright_cyan}[ System Settings ]{colors.reset}")
     print(f"{colors.yellow}1. Set API Key{colors.reset}")
     print(f"{colors.yellow}2. Select Model{colors.reset}")
-    print(f"{colors.yellow}3. Language Settings{colors.reset}")
-    print(f"{colors.yellow}4. Advanced Settings{colors.reset}")
-    print(f"{colors.yellow}5. Cache Settings{colors.reset}")
-    print(f"{colors.yellow}6. Backup Settings{colors.reset}")
-    print(f"{colors.yellow}7. Back to menu{colors.reset}")
+    print(f"{colors.yellow}3. Advanced Settings{colors.reset}")
+    print(f"{colors.yellow}4. Cache Settings{colors.reset}")
+    print(f"{colors.yellow}5. View System Info{colors.reset}")
+    print(f"{colors.yellow}6. Back to menu{colors.reset}")
     
-    choice = input(f"\n{colors.red}[>] Select (1-7): {colors.reset}")
+    choice = input(f"\n{colors.red}[>] Select (1-6): {colors.reset}")
     
     if choice == "1":
-        set_api_key()
+        print(f"\n{colors.yellow}Current Key: {'*' * min(20, len(config['api_key'])) if config['api_key'] else 'Not set'}{colors.reset}")
+        new_key = input(f"{colors.red}[>] Enter DeepSeek API Key: {colors.reset}")
+        if new_key.strip():
+            config["api_key"] = new_key.strip()
+            save_config(config)
+            print(f"{colors.bright_green}✓ API Key updated{colors.reset}")
+            time.sleep(2)
+    
     elif choice == "2":
-        select_model()
+        print(f"\n{colors.yellow}Current Model: {config['model']}{colors.reset}")
+        models = ["deepseek-chat", "deepseek-coder"]
+        for i, model in enumerate(models, 1):
+            print(f"{colors.green}{i}. {model}{colors.reset}")
+        
+        model_choice = input(f"\n{colors.red}[>] Select model (1-{len(models)}): {colors.reset}")
+        if model_choice.isdigit() and 1 <= int(model_choice) <= len(models):
+            config["model"] = models[int(model_choice)-1]
+            save_config(config)
+            print(f"{colors.bright_green}✓ Model set to: {config['model']}{colors.reset}")
+            time.sleep(1)
+    
     elif choice == "3":
-        select_language()
+        print(f"\n{colors.bright_cyan}[ Advanced Settings ]{colors.reset}")
+        print(f"{colors.yellow}1. Temperature: {config['temperature']}{colors.reset}")
+        print(f"{colors.yellow}2. Max Output Tokens: {config['max_output_tokens']}{colors.reset}")
+        print(f"{colors.yellow}3. WebUI Port: {config['webui_port']}{colors.reset}")
+        
+        adv_choice = input(f"\n{colors.red}[>] Select (1-3): {colors.reset}")
+        
+        if adv_choice == "1":
+            try:
+                temp = float(input(f"{colors.red}[>] Temperature (0.0-2.0): {colors.reset}"))
+                if 0.0 <= temp <= 2.0:
+                    config["temperature"] = temp
+                    save_config(config)
+                    print(f"{colors.bright_green}✓ Temperature set to: {temp}{colors.reset}")
+                else:
+                    print(f"{colors.red}✗ Must be between 0.0 and 2.0{colors.reset}")
+            except:
+                print(f"{colors.red}✗ Invalid input{colors.reset}")
+            time.sleep(1)
+        
+        elif adv_choice == "2":
+            try:
+                max_tokens = int(input(f"{colors.red}[>] Max Output Tokens (1-8192): {colors.reset}"))
+                if 1 <= max_tokens <= MAX_TOKENS_LIMIT:
+                    config["max_output_tokens"] = max_tokens
+                    save_config(config)
+                    print(f"{colors.bright_green}✓ Max tokens set to: {max_tokens}{colors.reset}")
+                else:
+                    print(f"{colors.red}✗ Must be between 1 and {MAX_TOKENS_LIMIT}{colors.reset}")
+            except:
+                print(f"{colors.red}✗ Invalid input{colors.reset}")
+            time.sleep(1)
+        
+        elif adv_choice == "3":
+            try:
+                port = int(input(f"{colors.red}[>] WebUI Port: {colors.reset}"))
+                if 1024 <= port <= 65535:
+                    config["webui_port"] = port
+                    save_config(config)
+                    print(f"{colors.bright_green}✓ WebUI port set to: {port}{colors.reset}")
+                else:
+                    print(f"{colors.red}✗ Port must be between 1024 and 65535{colors.reset}")
+            except:
+                print(f"{colors.red}✗ Invalid input{colors.reset}")
+            time.sleep(1)
+    
     elif choice == "4":
-        advanced_settings()
+        print(f"\n{colors.bright_cyan}[ Cache Settings ]{colors.reset}")
+        print(f"{colors.yellow}Cache Enabled: {config.get('enable_cache', True)}{colors.reset}")
+        print(f"{colors.yellow}Cache TTL Days: {config.get('cache_ttl_days', 30)}{colors.reset}")
+        
+        print(f"\n{colors.yellow}1. Toggle Cache{colors.reset}")
+        print(f"{colors.yellow}2. Clear All Cache{colors.reset}")
+        
+        cache_choice = input(f"\n{colors.red}[>] Select (1-2): {colors.reset}")
+        
+        if cache_choice == "1":
+            config["enable_cache"] = not config.get("enable_cache", True)
+            save_config(config)
+            status = "enabled" if config["enable_cache"] else "disabled"
+            print(f"{colors.bright_green}✓ Cache {status}{colors.reset}")
+            time.sleep(1)
+        
+        elif cache_choice == "2":
+            if os.path.exists(CACHE_DIR):
+                import shutil
+                shutil.rmtree(CACHE_DIR)
+                os.makedirs(CACHE_DIR)
+                print(f"{colors.bright_green}✓ Cache cleared{colors.reset}")
+                time.sleep(1)
+    
     elif choice == "5":
-        cache_settings()
-    elif choice == "6":
-        backup_settings()
-    elif choice == "7":
-        return
-
-def set_api_key():
-    """Set API key"""
-    config = load_config()
-    clear_screen()
-    banner()
-    
-    print(f"{colors.bright_cyan}[ API Key Setup ]{colors.reset}")
-    print(f"{colors.yellow}Current Key: {'*' * min(20, len(config['api_key'])) if config['api_key'] else 'Not set'}{colors.reset}")
-    
-    new_key = input(f"\n{colors.red}[>] Enter DeepSeek API Key: {colors.reset}")
-    if new_key.strip():
-        config["api_key"] = new_key.strip()
-        save_config(config)
-        print(f"{colors.bright_cyan}✓ API Key updated{colors.reset}")
-        time.sleep(2)
-
-def select_model():
-    """Select model"""
-    config = load_config()
-    clear_screen()
-    banner()
-    
-    print(f"{colors.bright_cyan}[ Model Selection ]{colors.reset}")
-    print(f"{colors.yellow}Current: {config['model']}{colors.reset}")
-    print(f"{colors.yellow}Note: DeepSeek Reasoner model might not be available in some regions{colors.reset}")
-    
-    for i, model in enumerate(AVAILABLE_MODELS, 1):
-        print(f"{colors.green}{i}. {model}{colors.reset}")
-    
-    choice = input(f"\n{colors.red}[>] Select (1-{len(AVAILABLE_MODELS)}): {colors.reset}")
-    
-    if choice.isdigit() and 1 <= int(choice) <= len(AVAILABLE_MODELS):
-        config["model"] = AVAILABLE_MODELS[int(choice)-1]
-        save_config(config)
-        print(f"{colors.bright_cyan}✓ Model set to: {config['model']}{colors.reset}")
-        time.sleep(1)
-
-def advanced_settings():
-    """Advanced settings"""
-    config = load_config()
-    clear_screen()
-    banner()
-    
-    print(f"{colors.bright_cyan}[ Advanced Settings ]{colors.reset}")
-    print(f"{colors.yellow}1. Temperature: {config['temperature']} (0.0-2.0){colors.reset}")
-    print(f"{colors.yellow}2. Top P: {config['top_p']} (0.0-1.0){colors.reset}")
-    print(f"{colors.yellow}3. Max Output Tokens: {config['max_output_tokens']} (1-8192){colors.reset}")
-    print(f"{colors.yellow}4. Context Window: {config['context_window']:,}{colors.reset}")
-    print(f"{colors.yellow}5. Back to menu{colors.reset}")
-    
-    choice = input(f"\n{colors.red}[>] Select (1-5): {colors.reset}")
-    
-    if choice == "1":
-        try:
-            temp = float(input(f"{colors.red}[>] Temperature (0.0-2.0): {colors.reset}"))
-            if 0.0 <= temp <= 2.0:
-                config["temperature"] = temp
-                save_config(config)
-                print(f"{colors.bright_green}✓ Temperature set to: {temp}{colors.reset}")
-            else:
-                print(f"{colors.red}✗ Must be between 0.0 and 2.0{colors.reset}")
-        except:
-            print(f"{colors.red}✗ Invalid input{colors.reset}")
-        time.sleep(1)
-    elif choice == "2":
-        try:
-            top_p = float(input(f"{colors.red}[>] Top P (0.0-1.0): {colors.reset}"))
-            if 0.0 <= top_p <= 1.0:
-                config["top_p"] = top_p
-                save_config(config)
-                print(f"{colors.bright_green}✓ Top P set to: {top_p}{colors.reset}")
-            else:
-                print(f"{colors.red}✗ Must be between 0.0 and 1.0{colors.reset}")
-        except:
-            print(f"{colors.red}✗ Invalid input{colors.reset}")
-        time.sleep(1)
-    elif choice == "3":
-        try:
-            max_tokens = int(input(f"{colors.red}[>] Max Output Tokens (1-8192): {colors.reset}"))
-            if 1 <= max_tokens <= MAX_TOKENS_LIMIT:
-                config["max_output_tokens"] = max_tokens
-                save_config(config)
-                print(f"{colors.bright_green}✓ Max tokens set to: {max_tokens}{colors.reset}")
-            else:
-                print(f"{colors.red}✗ Must be between 1 and {MAX_TOKENS_LIMIT}{colors.reset}")
-        except:
-            print(f"{colors.red}✗ Invalid input{colors.reset}")
-        time.sleep(1)
+        clear_screen()
+        banner()
+        
+        history = load_history()
+        total_conversations = len(history)
+        
+        total_messages = 0
+        total_tokens = 0
+        
+        for conv_id, conv_data in history.items():
+            total_messages += len(conv_data.get("messages", []))
+            total_tokens += conv_data.get("token_count", 0)
+        
+        print(f"{colors.bright_cyan}[ System Information ]{colors.reset}")
+        print(f"{colors.yellow}Storage Type: JSON Files (No Database){colors.reset}")
+        print(f"{colors.yellow}Total Conversations: {colors.green}{total_conversations:,}{colors.reset}")
+        print(f"{colors.yellow}Total Messages: {colors.green}{total_messages:,}{colors.reset}")
+        print(f"{colors.yellow}Total Tokens: {colors.green}{total_tokens:,}{colors.reset}")
+        print(f"{colors.yellow}History File: {colors.green}{HISTORY_FILE}{colors.reset}")
+        print(f"{colors.yellow}History Size: {colors.green}{os.path.getsize(HISTORY_FILE) // 1024:,} KB{colors.reset}")
+        print(f"{colors.yellow}Conversations Dir: {colors.green}{CONVERSATIONS_DIR}{colors.reset}")
+        print(f"{colors.yellow}Cache Dir: {colors.green}{CACHE_DIR}{colors.reset}")
+        
+        if os.path.exists(HISTORY_FILE):
+            modified_time = datetime.fromtimestamp(os.path.getmtime(HISTORY_FILE))
+            print(f"{colors.yellow}Last Modified: {colors.green}{modified_time.strftime('%Y-%m-%d %H:%M:%S')}{colors.reset}")
+        
+        input(f"\n{colors.red}[>] Press Enter to continue {colors.reset}")
 
 def toggle_webui():
     """Toggle WebUI"""
@@ -1442,7 +1216,6 @@ def toggle_webui():
     
     if config.get("webui_enabled"):
         print(f"{colors.bright_cyan}[ Disable WebUI ]{colors.reset}")
-        print(f"{colors.yellow}Current status: {colors.green}Active ✓{colors.reset}")
         confirm = input(f"{colors.red}[>] Disable WebUI? (y/n): {colors.reset}")
         if confirm.lower() == 'y':
             config["webui_enabled"] = False
@@ -1450,7 +1223,6 @@ def toggle_webui():
             print(f"{colors.bright_yellow}✓ WebUI disabled. Restart to apply.{colors.reset}")
     else:
         print(f"{colors.bright_cyan}[ Enable WebUI ]{colors.reset}")
-        print(f"{colors.yellow}Current status: {colors.red}Inactive ✗{colors.reset}")
         confirm = input(f"{colors.red}[>] Enable WebUI? (y/n): {colors.reset}")
         if confirm.lower() == 'y':
             config["webui_enabled"] = True
@@ -1459,47 +1231,65 @@ def toggle_webui():
     
     time.sleep(2)
 
-def system_info():
-    """Display system information"""
-    config = load_config()
-    clear_screen()
-    banner()
-    
-    # Get stats from database
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('SELECT COUNT(*) as total_conversations FROM conversations WHERE is_archived = 0')
-    total_conversations = cursor.fetchone()["total_conversations"]
-    
-    cursor.execute('SELECT COUNT(*) as total_messages FROM messages')
-    total_messages = cursor.fetchone()["total_messages"]
-    
-    cursor.execute('SELECT SUM(token_count) as total_tokens FROM conversations')
-    total_tokens = cursor.fetchone()["total_tokens"] or 0
-    
-    conn.close()
-    
-    print(f"{colors.bright_cyan}[ System Information ]{colors.reset}")
-    print(f"{colors.yellow}Database Version: 4.0 (Fixed){colors.reset}")
-    print(f"{colors.yellow}Total Conversations: {colors.green}{total_conversations:,}{colors.reset}")
-    print(f"{colors.yellow}Total Messages: {colors.green}{total_messages:,}{colors.reset}")
-    print(f"{colors.yellow}Total Tokens: {colors.green}{total_tokens:,}{colors.reset}")
-    print(f"{colors.yellow}Database Size: {colors.green}{os.path.getsize(DATABASE_FILE) // 1024:,} KB{colors.reset}")
-    print(f"{colors.yellow}Model: {colors.green}{config['model']}{colors.reset}")
-    print(f"{colors.yellow}API Token Limit: {colors.green}1-{MAX_TOKENS_LIMIT}{colors.reset}")
-    print(f"{colors.yellow}Context Window: {colors.green}{config['context_window']:,} tokens{colors.reset}")
-    print(f"{colors.yellow}Max Output Tokens: {colors.green}{config.get('max_output_tokens', MAX_OUTPUT_TOKENS)}{colors.reset}")
-    print(f"{colors.yellow}WebUI: {colors.green if config.get('webui_enabled') else colors.red}{'Active' if config.get('webui_enabled') else 'Inactive'}{colors.reset}")
-    
-    input(f"\n{colors.red}[>] Press Enter to continue {colors.reset}")
+def main_menu():
+    """Display main menu"""
+    while True:
+        config = load_config()
+        clear_screen()
+        banner()
+        
+        # Auto-start WebUI if enabled
+        if config.get("webui_enabled") and not webui_running:
+            print(f"{colors.bright_green}🚀 Starting WebUI...{colors.reset}")
+            webui_thread = threading.Thread(target=start_webui, daemon=True)
+            webui_thread.start()
+            time.sleep(2)
+        
+        print(f"{colors.bright_cyan}[ Main Menu - JSON Storage ]{colors.reset}")
+        print(f"{colors.yellow}1. Start Chat Session{colors.reset}")
+        print(f"{colors.yellow}2. Manage Conversations{colors.reset}")
+        print(f"{colors.yellow}3. Search Conversations{colors.reset}")
+        print(f"{colors.yellow}4. System Settings{colors.reset}")
+        print(f"{colors.yellow}5. WebUI ({'✅ Active' if config.get('webui_enabled') else '❌ Inactive'}){colors.reset}")
+        print(f"{colors.yellow}6. System Information{colors.reset}")
+        print(f"{colors.yellow}7. Exit{colors.reset}")
+        
+        if config.get("webui_enabled"):
+            print(f"\n{colors.bright_green}🌐 WebUI Active: http://localhost:{config.get('webui_port', 5000)}{colors.reset}")
+            print(f"{colors.bright_green}💾 Storage: Local JSON Files (No Database){colors.reset}")
+        
+        try:
+            choice = input(f"\n{colors.red}[>] Select (1-7): {colors.reset}")
+            
+            if choice == "1":
+                chat_session()
+            elif choice == "2":
+                manage_conversations()
+            elif choice == "3":
+                search_conversations_ui()
+            elif choice == "4":
+                system_settings()
+            elif choice == "5":
+                toggle_webui()
+            elif choice == "6":
+                system_settings()  # Reuse system settings for info
+            elif choice == "7":
+                print(f"{colors.bright_cyan}✓ Goodbye! History saved to {HISTORY_FILE}{colors.reset}")
+                sys.exit(0)
+            else:
+                print(f"{colors.red}✗ Invalid selection!{colors.reset}")
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            print(f"\n{colors.red}✗ Cancelled!{colors.reset}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"\n{colors.red}✗ Error: {e}{colors.reset}")
+            time.sleep(2)
 
 # ============ MAIN FUNCTION ============
 def main():
     """Main function"""
-    # Initialize database
-    init_database()
-    
     # Check for required packages
     required_packages = ['requests', 'flask', 'flask-cors']
     for package in required_packages:
@@ -1524,7 +1314,7 @@ def main():
     try:
         main_menu()
     except KeyboardInterrupt:
-        print(f"\n{colors.red}✗ Interrupted! Goodbye.{colors.reset}")
+        print(f"\n{colors.red}✗ Interrupted! History saved to {HISTORY_FILE}{colors.reset}")
         sys.exit(0)
     except Exception as e:
         print(f"\n{colors.red}✗ Fatal error: {e}{colors.reset}")
