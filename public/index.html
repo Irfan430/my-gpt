@@ -1,161 +1,31 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WormGPT - Unlimited Conversations</title>
-    <link rel="stylesheet" href="/static/css/style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <meta charset="UTF-8" />
+  <title>WormGPT WebUI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <div id="app">
-        <!-- SIDEBAR -->
-        <aside id="sidebar">
-            <div class="side-header">
-                <h2><i class="fas fa-brain"></i> WormGPT</h2>
-                <button id="newChat"><i class="fas fa-plus"></i> New Chat</button>
-                <div class="search-box">
-                    <input type="text" id="searchInput" placeholder="Search conversations...">
-                    <button id="searchBtn"><i class="fas fa-search"></i></button>
-                </div>
-            </div>
-            
-            <div class="stats">
-                <div class="stat-item">
-                    <span class="stat-label">Conversations:</span>
-                    <span id="totalConversations">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Messages:</span>
-                    <span id="totalMessages">0</span>
-                </div>
-            </div>
-            
-            <div class="sidebar-actions">
-                <button id="refreshConvs"><i class="fas fa-sync-alt"></i> Refresh</button>
-                <button id="archiveBtn"><i class="fas fa-archive"></i> Archive</button>
-                <button id="settingsBtn"><i class="fas fa-cog"></i> Settings</button>
-            </div>
-            
-            <div class="conversations-header">
-                <h3><i class="fas fa-history"></i> Recent Conversations</h3>
-            </div>
-            
-            <ul id="conversationList"></ul>
-        </aside>
 
-        <!-- MAIN CHAT AREA -->
-        <main id="chat">
-            <!-- TOP BAR -->
-            <div id="topbar">
-                <div class="topbar-left">
-                    <span id="conversationTitle">New Conversation</span>
-                    <span class="model-badge" id="modelBadge">deepseek-chat</span>
-                </div>
-                <div class="topbar-right">
-                    <span id="status"><i class="fas fa-circle status-ready"></i> Ready</span>
-                    <button id="stopBtn" class="hidden"><i class="fas fa-stop"></i> Stop</button>
-                    <button id="exportBtn"><i class="fas fa-download"></i> Export</button>
-                    <button id="clearBtn"><i class="fas fa-trash"></i> Clear</button>
-                </div>
-            </div>
+<div id="app">
+  <aside id="sidebar">
+    <h2>WormGPT</h2>
+    <button id="newChat">＋ New Chat</button>
+    <div id="conversationList"></div>
+  </aside>
 
-            <!-- MESSAGES CONTAINER -->
-            <div id="messages">
-                <div class="welcome-message">
-                    <h2><i class="fas fa-robot"></i> Welcome to WormGPT</h2>
-                    <p>Your conversations are stored permanently in the database.</p>
-                    <p>Start a new conversation or select one from the sidebar.</p>
-                    <div class="features">
-                        <div class="feature"><i class="fas fa-infinity"></i> Unlimited History</div>
-                        <div class="feature"><i class="fas fa-search"></i> Full-Text Search</div>
-                        <div class="feature"><i class="fas fa-database"></i> Persistent Storage</div>
-                        <div class="feature"><i class="fas fa-bolt"></i> 128K Context</div>
-                    </div>
-                </div>
-            </div>
+  <main id="chatArea">
+    <div id="messages"></div>
 
-            <!-- INPUT AREA -->
-            <div id="inputBar">
-                <div class="input-wrapper">
-                    <textarea id="input" placeholder="Type your message... (Shift+Enter for new line)" 
-                              rows="3"></textarea>
-                    <div class="input-actions">
-                        <button id="modelSelect" class="model-selector">
-                            <i class="fas fa-robot"></i> <span id="currentModel">deepseek-chat</span>
-                        </button>
-                        <button id="send" class="send-btn">
-                            <i class="fas fa-paper-plane"></i> Send
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- SETTINGS MODAL -->
-            <div id="settingsModal" class="modal hidden">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h3><i class="fas fa-cog"></i> Settings</h3>
-                        <button class="close-modal">&times;</button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="setting-group">
-                            <h4><i class="fas fa-key"></i> API Configuration</h4>
-                            <div class="setting-item">
-                                <label>API Key:</label>
-                                <input type="password" id="apiKey" placeholder="Enter your API key">
-                                <button id="saveApiKey">Save</button>
-                            </div>
-                            <div class="setting-item">
-                                <label>Model:</label>
-                                <select id="modelSelect">
-                                    <option value="deepseek-chat">DeepSeek Chat</option>
-                                    <option value="deepseek-coder">DeepSeek Coder</option>
-                                    <option value="deepseek-reasoner">DeepSeek Reasoner</option>
-                                </select>
-                            </div>
-                        </div>
-                        
-                        <div class="setting-group">
-                            <h4><i class="fas fa-sliders-h"></i> Parameters</h4>
-                            <div class="setting-item">
-                                <label>Temperature: <span id="tempValue">0.7</span></label>
-                                <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
-                            </div>
-                            <div class="setting-item">
-                                <label>Context Window: <span id="ctxValue">128000</span> tokens</label>
-                                <input type="range" id="contextWindow" min="32000" max="128000" step="8000" value="128000">
-                            </div>
-                        </div>
-                        
-                        <div class="setting-group">
-                            <h4><i class="fas fa-database"></i> Storage</h4>
-                            <div class="setting-item">
-                                <label>Enable Cache:</label>
-                                <label class="switch">
-                                    <input type="checkbox" id="enableCache" checked>
-                                    <span class="slider"></span>
-                                </label>
-                            </div>
-                            <div class="setting-item">
-                                <label>Auto Backup:</label>
-                                <label class="switch">
-                                    <input type="checkbox" id="autoBackup" checked>
-                                    <span class="slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        
-                        <div class="modal-footer">
-                            <button id="saveSettings" class="btn-primary">Save Settings</button>
-                            <button class="btn-secondary close-modal">Cancel</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </main>
+    <div id="inputBar">
+      <input id="userInput" type="text" placeholder="Type your message..." />
+      <button id="sendBtn">Send</button>
+      <button id="stopBtn" disabled>Stop</button>
     </div>
+  </main>
+</div>
 
-    <script src="/static/js/app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
